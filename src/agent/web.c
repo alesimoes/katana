@@ -1,4 +1,4 @@
-/* ---------- web: URL segura, curl, HTML para texto, WebFetch, busca (SearXNG e meta-buscador embutido) ---------- */
+/* ---------- web: URL segura, curl, HTML para texto, leitores de paginas de resultado (a busca fica em agent/websrc.c) ---------- */
 /* ---- URL segura para a linha de comando: so http/https; tudo fora de um conjunto seguro vira %XX ---- */
 static int url_safe(const char *u, char *out, size_t cap) {
     size_t n = 0;
@@ -250,75 +250,23 @@ static void html_snip(const char *s, const char *e, char *out, size_t cap) {
     for (size_t i = 0; i < o; i++) if (out[i] == '\n') out[i] = ' ';
 }
 
-/* SearXNG local (KATANA_SEARX=http://127.0.0.1:8888): resultados em JSON {title,url,content}.
- * Devolve quantos resultados escreveu em out; 0 se falhou ou veio vazio. */
-static int searx_parse(const char *raw, char *out, size_t cap) {
-    static char title[400], url[1000], content[700];
-    const char *r = strstr(raw, "\"results\"");
-    const char *p = r ? strchr(r, '[') : NULL;
-    int k = 0;
-    size_t o = 0;
-    out[0] = 0;
-    while (p && k < 8) {
-        const char *ob = strchr(p, '{');
-        if (!ob) break;
-        const char *q = ob;
-        int depth = 0, instr = 0;
-        for (; *q; q++) {                       /* fim do objeto, respeitando strings */
-            if (instr) { if (*q == '\\' && q[1]) q++; else if (*q == '"') instr = 0; }
-            else if (*q == '"') instr = 1;
-            else if (*q == '{') depth++;
-            else if (*q == '}' && --depth == 0) break;
-        }
-        if (!*q) break;
-        title[0] = url[0] = content[0] = 0;
-        json_str(ob, q, "title", title, sizeof title);
-        json_str(ob, q, "url", url, sizeof url);
-        json_str(ob, q, "content", content, sizeof content);
-        if (url[0] && title[0]) {
-            k++;
-            o += (size_t)snprintf(out + o, cap - o, "%d. %s\n   %s\n   %s\n", k, title, url, content);
-            if (o + 1800 > cap) break;
-        }
-        p = q + 1;
-    }
-    return k;
-}
+/* ---- leitores de paginas de resultado em HTML (kind html do registro de fontes, agent/websrc.c) ----
+ * Cada leitor conhece um formato de marcacao, nao um site: o registro diz qual leitor cada fonte usa (parser=...).
+ * Se um site mudar o formato, so o leitor dele precisa de ajuste e as outras fontes seguem. */
+typedef struct { char title[300], url[700], snip[450], date[16]; double score, rel; long age; unsigned src; int words; float cos; } Hit;
 
-static int tool_web_search_searx(const char *base, const char *query, char *out, size_t cap) {
-    const size_t RAW = 1500000;
-    char *raw = (char *)malloc(RAW + 1);
-    char q[1200], url[1700];
-    int rc, k = 0;
-    if (!raw) return 0;
-    url_enc(query, q, sizeof q);
-    size_t bl = strlen(base);
-    while (bl > 0 && base[bl - 1] == '/') bl--;
-    snprintf(url, sizeof url, "%.*s/search?q=%s&format=json", (int)(bl < 400 ? bl : 400), base, q);
-    const long n = curl_get(url, raw, RAW, &rc);
-    if (n > 0) k = searx_parse(raw, out, cap);
-    free(raw);
-    return k;
-}
-
-/* ---- meta-buscador embutido: consulta varias fontes sem chave de API, junta, remove duplicadas e ordena ----
- * Cada fonte tem seu proprio parser (funcoes src_*): se um site mudar o formato, so ele precisa de ajuste
- * e as outras seguem. Falhas vao para o registro (agente.log). */
-typedef struct { char title[300], url[700], snip[450]; double score; unsigned src; } Hit;
-#define MS_PER_SRC 10
-#define MS_NSRC 5
 
 static int hit_set(Hit *h, const char *title, const char *url, const char *snip) {
     if (!title[0] || !url[0] || strncmp(url, "http", 4) != 0) return 0;
     snprintf(h->title, sizeof h->title, "%s", title);
     snprintf(h->url, sizeof h->url, "%s", url);
     snprintf(h->snip, sizeof h->snip, "%s", snip);
-    h->score = 0; h->src = 0;
+    h->score = h->rel = 0; h->src = 0; h->date[0] = 0; h->age = -1; h->words = 0; h->cos = -2.0f;
     return 1;
 }
 
-/* DuckDuckGo (html.duckduckgo.com/html): links em //duckduckgo.com/l/?uddg=<url codificada> */
-static int src_ddg(const char *raw, const char *arg, Hit *out, int max) {
+/* leitor "result-a": <a class="result__a" href="...uddg=<url codificada>">titulo</a> ... class="result__snippet" */
+static int hp_result_a(const char *raw, const char *arg, Hit *out, int max) {
     static char href[2000], title[300], snip[450];
     const char *end = raw + strlen(raw);
     const char *p = strstr(raw, "class=\"result__a\"");
@@ -359,9 +307,9 @@ static int src_ddg(const char *raw, const char *arg, Hit *out, int max) {
     return k;
 }
 
-/* Mojeek (www.mojeek.com/search): <a class="title" href="URL">titulo</a> ... <p class="s">resumo</p>.
+/* leitor "title-s": <a class="title" href="URL">titulo</a> ... <p class="s">resumo</p>.
  * O site pode exigir um desafio de JavaScript (captcha) para clientes automaticos; nesse caso nao ha resultados. */
-static int src_mojeek(const char *raw, const char *arg, Hit *out, int max) {
+static int hp_title_s(const char *raw, const char *arg, Hit *out, int max) {
     static char title[300], snip[450], href[700];
     const char *end = raw + strlen(raw);
     const char *p = strstr(raw, "class=\"title\"");
@@ -397,43 +345,6 @@ static int src_mojeek(const char *raw, const char *arg, Hit *out, int max) {
     return k;
 }
 
-/* Wikipedia (api.php, list=search, JSON): arg = host (ex.: pt.wikipedia.org); URL montada a partir do titulo */
-static int src_wiki(const char *raw, const char *arg, Hit *out, int max) {
-    static char title[300], snip[450], url[700], enc[500];
-    const char *r = strstr(raw, "\"search\":[");
-    const char *p = r ? strchr(r, '[') : NULL;
-    int k = 0;
-    while (p && k < max) {
-        const char *ob = strchr(p, '{');
-        if (!ob) break;
-        const char *q = ob;
-        int depth = 0, instr = 0;
-        for (; *q; q++) {
-            if (instr) { if (*q == '\\' && q[1]) q++; else if (*q == '"') instr = 0; }
-            else if (*q == '"') instr = 1;
-            else if (*q == '{') depth++;
-            else if (*q == '}' && --depth == 0) break;
-        }
-        if (!*q) break;
-        static char rawsnip[900];
-        title[0] = rawsnip[0] = snip[0] = 0;
-        json_str(ob, q, "title", title, sizeof title);
-        json_str(ob, q, "snippet", rawsnip, sizeof rawsnip);
-        html_snip(rawsnip, rawsnip + strlen(rawsnip), snip, sizeof snip);
-        size_t n = 0;                                 /* titulo -> caminho: espaco vira _ ; resto percent-encoded */
-        for (const unsigned char *t = (const unsigned char *)title; *t && n + 4 < sizeof enc; t++) {
-            if (*t == ' ') enc[n++] = '_';
-            else if (isalnum(*t) || strchr("-._~()", *t)) enc[n++] = (char)*t;
-            else n += (size_t)snprintf(enc + n, sizeof enc - n, "%%%02X", *t);
-        }
-        enc[n] = 0;
-        snprintf(url, sizeof url, "https://%s/wiki/%s", arg, enc);
-        if (hit_set(&out[k], title, url, snip)) k++;
-        p = q + 1;
-    }
-    return k;
-}
-
 static int b64_val(int c) {
     if (c >= 'A' && c <= 'Z') return c - 'A';
     if (c >= 'a' && c <= 'z') return c - 'a' + 26;
@@ -443,8 +354,8 @@ static int b64_val(int c) {
     return -1;
 }
 
-/* Bing (www.bing.com/search): <li class="b_algo"><h2><a href="...&u=a1<base64 da URL>">titulo</a></h2> ... <p>resumo</p> */
-static int src_bing(const char *raw, const char *arg, Hit *out, int max) {
+/* leitor "b-algo": <li class="b_algo"><h2><a href="...&u=a1<base64 da URL>">titulo</a></h2> ... <p>resumo</p> */
+static int hp_b_algo(const char *raw, const char *arg, Hit *out, int max) {
     static char title[300], snip[450], href[700];
     const char *end = raw + strlen(raw);
     const char *p = strstr(raw, "class=\"b_algo\"");
@@ -472,7 +383,7 @@ static int src_bing(const char *raw, const char *arg, Hit *out, int max) {
                         if (bits >= 8) { bits -= 8; href[n++] = (char)((acc >> bits) & 255); }
                     }
                     href[n] = 0;
-                } else if (he && he - h < (long)sizeof href && strncmp(h, "http", 4) == 0 && !strstr(h, "bing.com/ck/")) {
+                } else if (he && he - h < (long)sizeof href && strncmp(h, "http", 4) == 0 && !strstr(h, "/ck/a?")) {
                     memcpy(href, h, (size_t)(he - h)); href[he - h] = 0;
                 }
                 const char *te = strstr(ae, "</a>");
@@ -491,15 +402,6 @@ static int src_bing(const char *raw, const char *arg, Hit *out, int max) {
     return k;
 }
 
-typedef struct { const char *name, *fmt, *arg; int (*parse)(const char *, const char *, Hit *, int); } Source;
-static const Source SOURCES[MS_NSRC] = {
-    { "duckduckgo", "https://html.duckduckgo.com/html/?q=%s", "", src_ddg },
-    { "bing", "https://www.bing.com/search?q=%s", "", src_bing },
-    { "mojeek", "https://www.mojeek.com/search?q=%s", "", src_mojeek },
-    { "wikipedia-pt", "https://pt.wikipedia.org/w/api.php?action=query&list=search&format=json&srlimit=5&srsearch=%s", "pt.wikipedia.org", src_wiki },
-    { "wikipedia-en", "https://en.wikipedia.org/w/api.php?action=query&list=search&format=json&srlimit=5&srsearch=%s", "en.wikipedia.org", src_wiki },
-};
-
 /* chave de comparacao de URL: sem esquema, sem www., sem fragmento, sem barra final, minuscula */
 static void url_key(const char *u, char *k, size_t cap) {
     size_t n = 0;
@@ -508,79 +410,5 @@ static void url_key(const char *u, char *k, size_t cap) {
     for (; *u && *u != '#' && n + 1 < cap; u++) k[n++] = (char)tolower((unsigned char)*u);
     while (n > 0 && k[n - 1] == '/') n--;
     k[n] = 0;
-}
-
-static int hit_cmp(const void *a, const void *b) {
-    const double x = ((const Hit *)a)->score, y = ((const Hit *)b)->score;
-    return x < y ? 1 : x > y ? -1 : 0;
-}
-
-/* fase 1 da busca: abre o curl de todas as fontes (rodam em paralelo); varias consultas podem abrir antes de coletar */
-static void tool_web_search_start(const char *query, FILE *fp[MS_NSRC]) {
-    char q[1200], url[1700];
-    url_enc(query, q, sizeof q);
-    for (int i = 0; i < MS_NSRC; i++) {
-        snprintf(url, sizeof url, SOURCES[i].fmt, q);
-        fp[i] = curl_open(url, 12);
-    }
-}
-/* fase 2: le as fontes abertas por tool_web_search_start e junta os resultados */
-static void tool_web_search_collect(const char *query, FILE *fp[MS_NSRC], char *out, size_t cap) {
-    const size_t RAW = 1000000;
-    static Hit all[MS_NSRC * MS_PER_SRC], per[MS_PER_SRC];
-    static char keys[MS_NSRC * MS_PER_SRC][500];
-    char fails[400];
-    int n = 0;
-    fails[0] = 0;
-    memset(all, 0, sizeof all);
-    char *raw = (char *)malloc(RAW + 1);
-    if (!raw) { for (int i = 0; i < MS_NSRC; i++) if (fp[i]) curl_finish(fp[i], raw, 0, NULL); snprintf(out, cap, "error: out of memory"); return; }
-    for (int i = 0; i < MS_NSRC; i++) {
-        int rc = -1, got = 0;
-        const long len = fp[i] ? curl_finish(fp[i], raw, RAW, &rc) : -1;
-        if (len > 0) {
-            const int k = SOURCES[i].parse(raw, SOURCES[i].arg, per, MS_PER_SRC);
-            for (int j = 0; j < k; j++) {
-                char key[500];
-                url_key(per[j].url, key, sizeof key);
-                const double pts = 1.0 / (j + 1) + 0.5;      /* posicao na fonte + bonus por aparecer */
-                int d = -1;
-                for (int t = 0; t < n; t++) if (strcmp(keys[t], key) == 0) { d = t; break; }
-                if (d < 0) { d = n++; all[d] = per[j]; snprintf(keys[d], sizeof keys[d], "%s", key); }
-                else if (strlen(per[j].snip) > strlen(all[d].snip)) snprintf(all[d].snip, sizeof all[d].snip, "%s", per[j].snip);
-                all[d].score += pts;
-                all[d].src |= 1u << i;
-                got++;
-            }
-        }
-        if (!got) {
-            size_t l = strlen(fails);
-            snprintf(fails + l, sizeof fails - l, "%s%s(%s)", l ? ", " : "", SOURCES[i].name,
-                     len > 0 ? "sem resultados/formato mudou/bloqueio" : "falha de rede");
-        }
-    }
-    free(raw);
-    if (fails[0]) agent_log("WebSearch", query, fails);        /* fontes que falharam */
-    qsort(all, (size_t)n, sizeof all[0], hit_cmp);              /* estavel o bastante: empate mantem a ordem de insercao na pratica */
-    size_t o = 0;
-    out[0] = 0;
-    for (int i = 0; i < n && i < 8; i++) {
-        o += (size_t)snprintf(out + o, cap - o, "%d. %s\n   %s\n   %.250s\n   (sources:", i + 1, all[i].title, all[i].url, all[i].snip);
-        for (int s = 0; s < MS_NSRC; s++) if (all[i].src & (1u << s)) o += (size_t)snprintf(out + o, cap - o, " %s", SOURCES[s].name);
-        o += (size_t)snprintf(out + o, cap - o, ")\n");
-        if (o + 1800 > cap) break;
-    }
-    if (!n) snprintf(out, cap, "error: no search source returned results (%s)", fails);
-}
-static void tool_web_search_meta(const char *query, char *out, size_t cap) {
-    FILE *fp[MS_NSRC];
-    tool_web_search_start(query, fp);
-    tool_web_search_collect(query, fp, out, cap);
-}
-
-static void tool_web_search(const char *query, char *out, size_t cap) {
-    const char *sx = getenv("KATANA_SEARX");        /* opcional: SearXNG proprio; senao usa o meta-buscador embutido */
-    if (sx && *sx && tool_web_search_searx(sx, query, out, cap) > 0) return;
-    tool_web_search_meta(query, out, cap);
 }
 

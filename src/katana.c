@@ -42,6 +42,7 @@
 #include "agent/undo.c"                /* versao anterior dos arquivos alterados; /undo */
 #include "agent/web.c"                 /* web: curl, HTML para texto, WebFetch, busca */
 #include "agent/webnav.c"              /* navegacao: paginas guardadas, offset, find, links, conteudo principal */
+#include "agent/websrc.c"              /* fontes da web: registro, roteador, leitores json/feed/html, verificador (docs/web-sources.md) */
 #include "agent/prompt.c"              /* agente: ambiente e prompt de sistema */
 #include "agent/mcp.c"                 /* cliente MCP */
 #include "agent/mcp_channel.c"         /* canal MCP: mensagens e confirmacoes empurradas por um servidor */
@@ -158,6 +159,7 @@
 #include "uioe/evgraph.c"              /* UIOE U3: grafo de evidencias, fusao e ordem */
 #include "uioe/verify.c"               /* UIOE U3: reler as linhas citadas */
 #include "uioe/conn_file.c"            /* UIOE U3: conectores de arquivos e documentos */
+#include "uioe/conn_web.c"             /* UIOE: o conector web.search sobre o roteador de fontes (agent/websrc.c) */
 #include "uioe/conn_memory.c"          /* UIOE U8: o conector memory.recall (a memoria do dono como evidencia datada) */
 #include "uioe/conn_code.c"           /* UIOE U3: conectores de codigo (API estruturada do coder) */
 #include "uioe/budget.c"               /* UIOE U3: prazos, disjuntor, uma chamada de conector */
