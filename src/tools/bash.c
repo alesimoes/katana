@@ -923,17 +923,31 @@ static const char CT_TASKSTOP_DESC[] =
     "Stop a background task started by Bash (run_in_background, or moved to the background at its timeout) or by Monitor. "
     "The whole process group is terminated. Its output file stays readable with Read.";
 static const char CT_TASKSTOP_PROPS[] = "\"task_id\": {\"type\": \"string\", \"description\": \"The ID of the background task to stop\"}";
+/* task_id: o numero da tarefa ("3", "task 3", "#3", "ID: 3"). Texto com outra coisa (o comando, um e-mail com digitos) da 0: a sessao de
+   25/11 passou o comando inteiro e o primeiro numero achado nele (parte de um e-mail) virou "there is no task 1983" */
+static int ctb_task_id(const char *id) {
+    if (!id) return 0;
+    const char *d = id;
+    while (*d == ' ' || *d == '#') d++;
+    if (!strncmp(d, "task", 4) || !strncmp(d, "Task", 4)) d += 4;
+    if (!strncmp(d, "ID", 2) || !strncmp(d, "id", 2)) d += 2;
+    while (*d == ' ' || *d == ':' || *d == '#') d++;
+    if (!isdigit((unsigned char)*d)) return 0;
+    const int n = atoi(d);
+    while (isdigit((unsigned char)*d)) d++;
+    while (*d == ' ') d++;
+    return *d ? 0 : n;
+}
 static const char CT_TASKSTOP_REQ[] = "\"task_id\"";
 static void ct_taskstop(const char *js, const char *end, char *out, size_t cap) {
     char *id = ct_str(js, end, "task_id");
-    const char *d = id; while (d && *d && !isdigit((unsigned char)*d)) d++;
-    const int n = d && *d ? atoi(d) : 0;
+    const int n = ctb_task_id(id);
     free(id);
     for (int i = 0; i < JOB_N; i++) job_poll(&g_jobs[i]);
     Job *j = NULL;
     for (int i = 0; i < JOB_N; i++) if (n && g_jobs[i].id == n) j = &g_jobs[i];
     if (!j) {
-        size_t o = (size_t)snprintf(out, cap, n ? "error: there is no task %d." : "error: missing task_id.", n);
+        size_t o = (size_t)snprintf(out, cap, n ? "error: there is no task %d." : "error: task_id must be the NUMBER of the task (the ID in the result that started it), not the command.", n);
         int k = 0;
         for (int i = 0; i < JOB_N && o + 300 < cap; i++) if (g_jobs[i].id && !g_jobs[i].done) o += (size_t)snprintf(out + o, cap - o, "%s %d (%s)", k++ ? "," : " Running tasks:", g_jobs[i].id, g_jobs[i].cmd);
         if (!k && o < cap) snprintf(out + o, cap - o, " No background task is running.");
@@ -1009,8 +1023,7 @@ static size_t ctb_ask_msg(const Job *j, int mode, const char *ans, int discarded
 }
 static void ct_sendinput(const char *js, const char *end, char *out, size_t cap) {
     char *id = ct_str(js, end, "task_id");
-    const char *d = id; while (d && *d && !isdigit((unsigned char)*d)) d++;
-    const int n = d && *d ? atoi(d) : 0;
+    const int n = ctb_task_id(id);
     free(id);
     const char *a, *b;
     size_t tl = 0;
@@ -1028,7 +1041,7 @@ static void ct_sendinput(const char *js, const char *end, char *out, size_t cap)
     if (!j || j->done || !j->mfd) {
         memset(text, 0, tl); free(text);
         if (!j) {
-            size_t o = (size_t)snprintf(out, cap, n ? "error: there is no task %d." : "error: missing task_id.", n);
+            size_t o = (size_t)snprintf(out, cap, n ? "error: there is no task %d." : "error: task_id must be the NUMBER of the task (the ID in the result that started it), not the command.", n);
             int k = 0;
             for (int i = 0; i < JOB_N && o + 300 < cap; i++) if (g_jobs[i].id && !g_jobs[i].done) o += (size_t)snprintf(out + o, cap - o, "%s %d (%s)", k++ ? "," : " Running tasks:", g_jobs[i].id, g_jobs[i].cmd);
             if (!k && o < cap) snprintf(out + o, cap - o, " No background task is running.");

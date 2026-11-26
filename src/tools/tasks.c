@@ -81,6 +81,21 @@ static int ct_todo_lines(const char *txt, CtTask *nt, char *out, size_t cap) {
         }
         while (l && *p == ' ') { p++; l--; }
         while (l && (p[l - 1] == ' ' || p[l - 1] == '\r')) l--;
+        {   /* o modelo marca o passo feito escrevendo no fim da linha (" - DONE", "(done)", "- feito"): vale como [x] e sai do texto.
+               A sessao de 25/11 reenviou a lista 30 vezes assim e recebeu "the list did not change" em todas */
+            static const char *const sfx[] = {"done", "DONE", "Done", "feito", "FEITO", "Feito", "ok", "OK", "concluido", "completed", "COMPLETED", NULL};
+            for (int si = 0; sfx[si]; si++) {
+                const size_t sl = strlen(sfx[si]); size_t k = l;
+                if (k && p[k - 1] == ')') k--;
+                if (k <= sl + 2 || strncmp(p + k - sl, sfx[si], sl)) continue;
+                k -= sl;
+                if (p[k - 1] == '(') k--; else { while (k && p[k - 1] == ' ') k--; if (!k || (p[k - 1] != '-' && p[k - 1] != ':')) continue; k--; }
+                while (k && p[k - 1] == ' ') k--;
+                if (!k) continue;
+                l = k; st = 2;
+                break;
+            }
+        }
         if (l) {
             if (n == CT_TASK_MAX) { snprintf(out, cap, "error: too many tasks (at most %d); merge or drop some", CT_TASK_MAX); return -1; }
             char line[512]; snprintf(line, sizeof line, "%.*s", (int)(l < 500 ? l : 500), p);
@@ -128,6 +143,10 @@ static void ct_todowrite(const char *js, const char *end, char *out, size_t cap)
         const int n = txt ? ct_todo_lines(txt, nt, out, cap) : 0;
         if (!txt) snprintf(out, cap, "error: todos is empty");
         free(txt);
+        if (n > 0 && ct_find(js, end, "done", &a, &b)) {      /* todos e done na mesma chamada: done diz quantos passos estao feitos (antes era ignorado) */
+            long d = (long)ct_int(js, end, "done", 0); if (d < 0) d = 0; if (d > n) d = n;
+            for (int i = 0; i < n; i++) if (i < d) nt[i].st = 2; else if (i == d && nt[i].st == 0) nt[i].st = 1;
+        }
         if (n > 0) ct_todo_commit(nt, n, out, cap);
         free(nt);
         return;

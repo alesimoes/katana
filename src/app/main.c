@@ -1274,6 +1274,7 @@ static int run_main(int argc, char **argv) {
         return toktest(&m, argv[3], argc > 4 && strcmp(argv[4], "--chat") == 0);
     }
     if (argc >= 2 && strcmp(argv[1], "sources") == 0) return ws_cli(argc - 2, argv + 2);      /* registro de fontes da web e a rota de uma pergunta (docs/web-sources.md) */
+    if (argc >= 2 && strcmp(argv[1], "flow") == 0) return flow_main(argc - 2, argv + 2);      /* fluxos declarados: list, tools, classify, learn, lessons (docs/flows.md) */
     if (argc >= 2 && strcmp(argv[1], "uioe") == 0) return uioe_main(argc - 2, argv + 2);      /* UIOE: porta de entrada antes do modelo (docs/uioe.md) */
     if (argc >= 2 && strcmp(argv[1], "coder") == 0) return coder_main(argc - 2, argv + 2);      /* modulo coder (inteligencia de codigo) */
     if (argc >= 4 && strcmp(argv[1], "docsel") == 0) {      /* katana docsel <modelo.gguf> "pedido" [pasta]: o que o motor entregaria como contexto */

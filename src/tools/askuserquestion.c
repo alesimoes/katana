@@ -123,7 +123,7 @@ static int ct_q_parse(const char *obj, const char *oe, int idx, CtQuestion *q, c
     if (!ct_find(obj, oe, "options", &v, &ve)) { snprintf(err, ecap, "error: questions[%d].options is missing; give 2 to 4 options, each {label, description}", idx); goto done; }
     int many;
     q->nopt = ct_opts_parse(v, ve, q->opt, &many);
-    if (q->nopt < 2) { snprintf(err, ecap, "error: questions[%d].options has %d usable option(s); it needs 2 to 4, each with a non-empty label", idx, q->nopt); goto done; }
+    if (q->nopt < 2) { snprintf(err, ecap, "error: questions[%d].options has %d usable option(s); it needs 2 to 4, each with a non-empty label (the user can always type another answer). For a value a running command asks for (a password, a code), do not ask here: use SendInput(task_id, ask_user=true)", idx, q->nopt); goto done; }
     if (many) { snprintf(err, ecap, "error: questions[%d].options has %d options; the maximum is %d (the user can always type another answer)", idx, q->nopt + many, CT_OPT_MAX); goto done; }
     for (int i = 0; i < q->nopt; i++) for (int j = 0; j < i; j++)
         if (ct_ieq(q->opt[i].label, q->opt[j].label)) { snprintf(err, ecap, "error: questions[%d].options has the label \"%.60s\" twice; labels must be different", idx, q->opt[i].label); goto done; }

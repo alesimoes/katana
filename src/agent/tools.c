@@ -222,7 +222,38 @@ static void alog_json(const char *dir, const char *name, const char *args, const
     fprintf(f, ",\"pid\":%d}\n", (int)getpid());
     fclose(f);
 }
+/* valor de senha, token ou chave passado num comando: trocado por asteriscos, no lugar (mesmo tamanho). O registro de 25/11 guardou uma senha
+ * escrita pelo modelo em `login -p '...'`; o que vai para o registro e para as licoes (agent/flowmem.c) passa por aqui. `-p` so conta em comando de
+ * login (mkdir -p, ssh -p sao outra coisa). */
+static void secret_mask(char *s) {
+    static const char *const flag[] = {"--password", "--passwd", "--pass", "--token", "--secret", "--api-key", "--apikey", "PASSWORD=", "TOKEN=", "SECRET=", "API_KEY=", NULL};
+    const int login = strstr(s, "login") || strstr(s, "auth") || strstr(s, "passw") || strstr(s, "mysql") || strstr(s, "sshpass");
+    for (char *p = s; *p; p++) {
+        size_t fl = 0;
+        for (int i = 0; flag[i] && !fl; i++) if (!strncmp(p, flag[i], strlen(flag[i]))) fl = strlen(flag[i]);
+        if (!fl && login && p[0] == ' ' && p[1] == '-' && p[2] == 'p' && p[3] == ' ') fl = 3;
+        if (!fl) continue;
+        char *v = p + fl;
+        if (isalnum((unsigned char)*v) || *v == '-') continue;      /* --password-file, --tokens: outra opcao */
+        while (*v == ' ' || *v == '=') v++;
+        const char *h = v; while (*h == '\\' ) h++;
+        if (!strncmp(h, "--help", 6) || *h == '-' ) continue;
+        if (*v == '\\' && (v[1] == '"' || v[1] == '\'')) v++;
+        const char q = (*v == '\'' || *v == '"') ? *v : 0;
+        if (q) v++;
+        while (*v && (q ? (*v != q && !(*v == '\\' && v[1] == q)) : (*v != ' ' && *v != '"' && *v != '\\' && *v != '\n'))) *v++ = '*';
+        p = v > p ? v - 1 : p;
+    }
+}
+static void agent_log_raw(const char *name, const char *args, const char *res);
 static void agent_log(const char *name, const char *args, const char *res) {
+    char *am = strdup(args);
+    if (!am) { agent_log_raw(name, args, res); return; }
+    secret_mask(am);
+    agent_log_raw(name, am, res);
+    free(am);
+}
+static void agent_log_raw(const char *name, const char *args, const char *res) {
     char p[1200], dir[1200], a[ALOG_ARGS + 40], r[ALOG_RES + 40];
     const double ms = g_alog_t0 > 0 ? (alog_now() - g_alog_t0) * 1000.0 : 0;
     g_alog_t0 = 0;

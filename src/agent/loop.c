@@ -671,7 +671,7 @@ static int agent(Model *m, int max_tokens, float temp) {
         if (reset) {
             if (cml && !first && hist.n) { g_busy = 1; sess_save(m, sys, &hist, &slog, 0); g_busy = 0; }   /* fecha a sessao */
             g_sess_path[0] = 0;
-            pos = 0; first = 1; ah_clear(&hist); ah_clear(&slog); todo_clear(); ct_session_reset(); undo_pend = 0; uioe_inv_reset(usess);
+            pos = 0; first = 1; ah_clear(&hist); ah_clear(&slog); todo_clear(); ct_session_reset(); undo_pend = 0; uioe_inv_reset(usess); flow_reset();
         }
         if (cmd == 3) snprintf(line, sizeof line, "%s", g_ext_msg);      /* /init, /skill, /nome, /servidor:prompt: a mensagem vai ao modelo */
         else if (cmd) continue;
@@ -729,6 +729,11 @@ static int agent(Model *m, int max_tokens, float temp) {
         rp_n = 0; rp_fail = 0; rp_refused = 0; rp_stuck = 0; bk_n = 0; rr_reset();        /* estado deste pedido (antes so zerava na 1a chamada da rodada 0) */
         if (asks_for_command(line)) { static char gl[16384]; KNOTE(GIVE_CMD, gl, sizeof gl, line); snprintf(line, sizeof line, "%s", gl); }
         else if (says_already_done(line)) { static char gl[16384]; KNOTE(USER_DONE, gl, sizeof gl, line); snprintf(line, sizeof line, "%s", gl); }
+        {   /* fluxo declarado (agent/flow.c): o pedido escolhe, continua ou encerra o playbook; a linha do proximo passo vai no fim do pedido */
+            static char fn[1400];
+            const int cmdreq = asks_for_command(ureq) || says_already_done(ureq);      /* essas notas ja mandam o que fazer: a linha do fluxo nao concorre com elas */
+            if (cml && flow_request(ureq, fn, sizeof fn) && !cmdreq && strlen(line) + strlen(fn) + 2 < sizeof line) strcat(line, fn);
+        }
         if (ublk) uioe_commit(usess);      /* o que o bloco mostrou conta como mostrado para o Find e o Read (o rr_reset acima apagou o estado anterior) */
         {   /* a lista de um pedido anterior ainda tem passos em aberto: a mensagem nova do usuario vem antes deles */
             int td = 0; const int tn = todo_count(&td);
@@ -937,11 +942,12 @@ static int agent(Model *m, int max_tokens, float temp) {
                 for (int i = 0; i < rp_n; i++) if (rp_sig[i] == csig && rp_err[i]) rp_same_fail++;
                 const int rp_refuse = !trunc && rp_same_fail >= (!strcmp(name, "TodoWrite") ? 1 : 2);      /* a lista igual so reescrita e o laco mais comum: a 2a chamada ja nao roda */
                 const int rr_hit = !trunc && !rp_refuse && rr_check(name, csig, result, sizeof result);      /* repeticao de leitura que deu certo */
+                const int fl_ref = cml && !trunc && !rp_refuse && !rr_hit && flow_before(name, ap, end, result, sizeof result);      /* fora do fluxo: so recusa com KATANA_FLOW=strict */
                 if (trunc) snprintf(result, sizeof result, "error: your tool call was cut off because the answer reached the limit of %d tokens (or the context), so NOTHING was run. %s", max_tokens,
                         "For a long file call Write with the first 150 lines or so, then add the rest in parts with Bash (cat >> file <<'EOF' ... EOF); or make the script shorter.");
                     else if (rp_refuse) snprintf(result, sizeof result, "error: refused. You already made this exact call %d times in this request and it failed the same way each time, so it was NOT run again. "
                                                  "Do not send it again. Read the error it gave, change the arguments or use another tool, or stop and tell the user in words what is blocking you.", rp_same_fail);
-                    else if (rr_hit) { }
+                    else if (rr_hit || fl_ref) { }
                     else { g_agent_m = m; g_agent_pos = pos; agent_tool(name, ap, end, result, sizeof result); }
                     ui_toolout(name, result);
                 if (!g_con_rich) fprintf(stderr, "%s[ferramenta %s: %zu bytes de resultado]%s\n", CE(C_DIM), name, strlen(result), CE(C_RESET));
@@ -990,6 +996,7 @@ static int agent(Model *m, int max_tokens, float temp) {
                 if (g_rd_toomany && !strcmp(name, "Read") && !trunc) { g_rd_toomany = 0; if (round < lim - 2) round = lim - 2; rl_forced = 1; }      /* muitas fatias do mesmo arquivo: encerra e relata */
                 if (!trunc && !rp_refuse && !rr_hit && !rp_failed(result)) fg_neighbor_note(name, ap, end, result, sizeof result);      /* vizinhos ainda nao lidos (grafo do Find) */
                 if (!trunc && !rp_refuse) loop_plan_note(result, sizeof result, name, pl_calls, pl_old);     /* planejar antes de executar, e seguir o plano em ordem */
+                if (cml && !trunc && !rp_refuse && !rr_hit && !fl_ref) { g_agent_m = m; g_agent_pos = pos; flow_after(name, ap, end, result, sizeof result, rp_failed(result), round == lim - 2); }      /* o estado do fluxo anda; a linha [katana: next ...] entra no fim do resultado */
                 if (round == lim - 2) {      /* penultima rodada deste pedido (ou insistencia): a proxima fala tem de ser a resposta ao usuario */
                     const size_t rl = strlen(result);
                     if (rl + 400 < sizeof result)

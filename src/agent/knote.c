@@ -35,6 +35,7 @@ typedef enum {
     KN_PLACE,                              /* Q1: pasta citada que nao existe da pasta de trabalho; so sai SEM bloco do UIOE (com bloco: `Question understood as` e `Next` dizem o caminho) */
     KN_DOCS,                               /* Q2: cabecalho dos trechos de documentos escolhidos pelo motor; com bloco do UIOE o cabecalho nao vai (as linhas entram em `Evidence`) */
     KN_FINISH_EXAMPLE, KN_FINISH_TEST, KN_FINISH_DONE,   /* T2, T3: antes de encerrar */
+    KN_FLOW_NEXT,                          /* F1: estado do fluxo e proximo passo (agent/flow.c, docs/flows.md); fim de um resultado ou do pedido */
     KN_COUNT
 } KnKind;
 
@@ -119,6 +120,8 @@ enum { KN_BUDGET = 1 };                                    /* flag: conta no orc
 #define KNF_FINISH_TEST "[katana: this request changed files, and the project file says to verify with `%.200s`, which has not run in this request. Run it before you finish, or say why you cannot.]"
 #define KNF_FINISH_DONE "[katana: this request changed files, and the project file defines done as: %.250s. Check that before you finish, or say why you cannot.]"
 
+#define KNF_FLOW_NEXT "\n[katana: next%s: %s%s]"
+
 typedef struct {
     const char *name;           /* rotulo estavel (log, relatorio) */
     unsigned char cls, site, flags;
@@ -163,6 +166,7 @@ static const KnSpec KN_TAB[KN_COUNT] = {
     [KN_FINISH_EXAMPLE]  = {"finish_example",  KN_ORDER, KN_TURN,   0, 0, KNF_FINISH_EXAMPLE},
     [KN_FINISH_TEST]     = {"finish_test",     KN_ORDER, KN_TURN,   0, 0, KNF_FINISH_TEST},
     [KN_FINISH_DONE]     = {"finish_done",     KN_ORDER, KN_TURN,   0, 0, KNF_FINISH_DONE},
+    [KN_FLOW_NEXT]       = {"flow_next",       KN_ORDER, KN_RESULT, 0, 0, KNF_FLOW_NEXT},
 };
 
 /* Orcamento (proposta do docs/katana-notes.md, secao 7.1; os valores abaixo sao mais folgados do que a proposta de 1200 bytes por

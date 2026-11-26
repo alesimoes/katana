@@ -213,6 +213,7 @@ static int cg_name_byte(CgState *s, unsigned char c, const char *const *opt, int
     return -2;
 }
 static const char *cg_tool_names[CG_MAXT];
+static uint64_t g_cg_skip;         /* nomes de ferramenta fora da mascara neste momento (bit = indice em cg_tool_names); agent/flow.c, KATANA_FLOW_GRAMMAR */
 static const char *cg_prop_names(const CgTool *t, const char **out) { for (int i = 0; i < t->np; i++) out[i] = t->pk[i]; return NULL; }
 /* literal com espacos antes (ate CG_WS) */
 static int cg_lit(CgState *s, unsigned char c, const char *lit, int next) {
@@ -261,7 +262,7 @@ static int cg_step_xml(CgState *s, unsigned char c) {
         switch (s->ph) {
         case CX_FUNC: return cg_lit(s, c, "<function=", CX_NAME);
         case CX_NAME: {
-            const int r = cg_name_byte(s, c, cg_tool_names, g_cg.nt, 0, '>');
+            const int r = cg_name_byte(s, c, cg_tool_names, g_cg.nt, g_cg_skip, '>');
             if (r == -2) return 0;
             if (r >= 0) { s->tool = r; s->used = 0; cg_enter(s, CX_TAG); }
             return 1;
@@ -367,7 +368,7 @@ static int cg_step_g4(CgState *s, unsigned char c) {
         switch (s->ph) {
         case CG_CALL: return cg_lit(s, c, "call:", CG_GNAME);
         case CG_GNAME: {
-            const int r = cg_name_byte(s, c, cg_tool_names, g_cg.nt, 0, '{');
+            const int r = cg_name_byte(s, c, cg_tool_names, g_cg.nt, g_cg_skip, '{');
             if (r == -2) return 0;
             if (r >= 0) { s->tool = r; s->used = 0; cg_enter(s, CG_KEY); }
             return 1;

@@ -174,6 +174,8 @@
 #include "agent/mcp_serve.c"           /* katana mcp serve: o katana como servidor MCP (stdio) */
 #include "agent/callgrammar.c"         /* chamadas de ferramenta validas por construcao (nome, chaves, valores tipados) */
 #include "agent/teacher.c"             /* modo professor: um modelo maior responde no lugar do local (API de mensagens) */
+#include "agent/flow.c"                /* fluxos declarados (playbooks), estado por conversa e a linha [katana: next ...] (docs/flows.md) */
+#include "agent/flowmem.c"             /* memoria de fluxos: licoes de "falha seguida de sucesso", recuperacao pelo estado, reordenacao pelo modelo */
 #include "agent/loop.c"                /* sessoes (gravar, retomar) e o laco do agente */
 #include "agent/agentlog.c"            /* katana agentlog: chamadas, falhas e repeticoes por ferramenta no registro de acoes */
 #include "app/server.c"                /* servidor HTTP (pagina, /api/chat, rede, fila do modelo) */
