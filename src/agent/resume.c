@@ -54,6 +54,7 @@ static struct {
     int reason;                                                               /* reentrada pendente (RZR_*) */
     int grace, score_left, sc_on, sc_dead, sc_dup, sc_reason; char delta[6][200]; int ndelta;
     int loaded, new_proc, moved, foreign, noted;                              /* carga: houve estado; o que mudou no ambiente; aviso de erro dado */
+    long long t_saved; int grace_age;                                         /* quando o estado foi gravado pela ultima vez; pedidos desde a carga */
     char old_cwd[1024];                                                       /* a pasta gravada antes de este processo se anotar */
     int more_delta;                                                           /* mudancas alem das seis frases */
     int plan_done;                                                            /* passos do plano marcados na ultima conta */
@@ -440,6 +441,7 @@ static void rz_env_check(void) {
     g_rz.new_proc = s->agent_pid != (long)getpid() || strcmp(s->host, host) != 0;
     g_rz.moved = s->cwd[0] && strcmp(s->cwd, cwd) != 0;
     rz_cpy(g_rz.old_cwd, sizeof g_rz.old_cwd, s->cwd);
+    g_rz.t_saved = s->t_event;
     struct stat st;
     g_rz.foreign = strcmp(s->host, host) != 0 || (s->cwd[0] && stat(s->cwd, &st) != 0);
 }
@@ -490,7 +492,7 @@ static int rz_open(const char *sess_path, int adopt) {
         rz_header(sess_path);
     }
     if (g_rz.file[0] && !g_rz.readonly) g_rz_keep = 1;
-    if (g_rz.loaded) { rz_restore_flow(); rz_restore_misc(); rz_reconcile(); }
+    if (g_rz.loaded) { g_rz.grace = 1; g_rz.grace_age = 0; rz_restore_flow(); rz_restore_misc(); rz_reconcile(); }      /* graca: o primeiro pedido depois da carga nao encerra o trabalho aberto so por nao ser uma palavra de "continue" */
     return g_rz.loaded;
 }
 /* a sessao foi apagada (sess_purge): o estado dela vai junto */
@@ -501,6 +503,7 @@ static void rz_remove_files(const char *sess_path) {
 }
 
 /* ---------- espelho do fluxo, objetivo e pedido ---------- */
+static void rz_sync_all(void);
 /* g_fl -> estado: so o que mudou vira evento (F, X, G) */
 static void rz_sync_flow(void) {
     if (!rz_on() || g_ct_depth > 1) return;
@@ -544,6 +547,7 @@ static void rz_sync_all(void);
 static void rz_request_begin(const char *ureq) {
     if (!rz_on() || g_ct_depth > 1) return;
     if (!g_rz.s.agent_pid) rz_header(g_sess_path);
+    if (g_rz.grace && g_rz.grace_age++ >= 1) g_rz.grace = 0;      /* a graca vale para um pedido so */
     rz_clean(g_rz.req_text, sizeof g_rz.req_text, ureq, 0);
     char b[240]; rz_clean(b, sizeof b, ureq, 0);
     rz_ev('U', rz_i(g_fl.req + 1), b, NULL);

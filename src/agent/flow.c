@@ -455,6 +455,13 @@ static int flow_retrieve(const char *name, const char *result, char *out, size_t
 static void flow_grammar_mask(void);
 static void flow_jit(char *out, size_t cap);
 static size_t flow_memory_note(const char *name, const char *js, const char *end, const char *result, int failed, char *out, size_t cap);      /* flowmem.c */
+static int rz_grace(void);      /* resume_note.c: o primeiro pedido depois de reabrir a sessao nao encerra o trabalho aberto */
+static size_t rz_block(char *out, size_t cap);
+static void rz_request_begin(const char *ureq);
+static void rz_before(const char *name, const char *js, const char *end);
+static void rz_after(const char *name, const char *js, const char *end, const char *result, int failed, int ev, int gain);
+static int rz_cmd_state(const char *file);
+static void rz_sim_begin(void), rz_sim_restart(void), rz_sim_end(void);
 
 /* ---- pedido novo do usuario: escolhe, continua ou encerra o fluxo; out recebe a linha para o fim do pedido (0: nada) ---- */
 static void rz_sync_flow(void);      /* resume.c: o espelho durável do estado do fluxo */
@@ -479,7 +486,7 @@ static size_t flow_request_body(const char *ureq, char *out, size_t cap) {
         if (ti && want != FL_IMAGE) g_fl.stk[g_fl.depth++] = tp;
     } else if (top && top->id != FL_TERMINAL && top->id != FL_PLAN && top->id != FL_WORKTREE && top->id != FL_PLANMODE) {
         const int closed = FL_BOOK[top->id].st[top->st].expect && !FL_BOOK[top->id].st[top->st].expect[0];      /* estado de responder: o fluxo ja acabou */
-        if (closed || !(fl_any(t, go) && strlen(t) < 120)) { fl_log("end\t%s\t-\tnew request", FL_BOOK[top->id].name); g_fl.depth = 0; }
+        if (!rz_grace() && (closed || !(fl_any(t, go) && strlen(t) < 120))) { fl_log("end\t%s\t-\tnew request", FL_BOOK[top->id].name); g_fl.depth = 0; }
     }
     if (fl_id() == FL_CODE) fl_find_verify();
     flow_grammar_mask();
@@ -660,10 +667,18 @@ static int flow_main(int argc, char **argv) {
     if (!strcmp(cmd, "sim") && argc > 1) {      /* roteiro sem modelo: "U<TAB>pedido" e "C<TAB>ferramenta<TAB>argumentos json<TAB>resultado" (\\n no resultado vira quebra de linha); imprime o que o modelo leria */
         FILE *f = fopen(argv[1], "rb"); if (!f) { fprintf(stderr, "flow sim: cannot open %s\n", argv[1]); return 1; }
         static char ln[20000], res[24000], note[9000];
-        flow_reset();
+        flow_reset(); rz_sim_begin();
         while (fgets(ln, sizeof ln, f)) {
             ln[strcspn(ln, "\r\n")] = 0;
-            if (ln[0] == 'U' && ln[1] == '\t') { printf("USER %s\n", ln + 2); if (flow_request(ln + 2, note, sizeof note)) printf("    %s\n", note + 1); continue; }
+            if (ln[0] == 'R' && !ln[1]) { printf("RESTART\n"); rz_sim_restart(); continue; }      /* reinicio: guarda o estado, limpa a memoria, le de volta e reconcilia */
+            if (ln[0] == 'U' && ln[1] == '\t') {
+                static char rb[4000];
+                printf("USER %s\n", ln + 2); rz_request_begin(ln + 2);
+                const size_t fnl = flow_request(ln + 2, note, sizeof note);
+                if (rz_block(rb, sizeof rb)) printf("    %s\n", rb + 1);
+                if (fnl) printf("    %s\n", note + 1);
+                continue;
+            }
             if (ln[0] != 'C' || ln[1] != '\t') continue;
             char *tool = ln + 2, *js = strchr(tool, '\t'); if (!js) continue; *js++ = 0;
             char *r = strchr(js, '\t'); if (!r) continue; *r++ = 0;
@@ -672,11 +687,15 @@ static int flow_main(int argc, char **argv) {
             printf("CALL %s %.70s\n", tool, js);
             if (flow_before(tool, js, js + strlen(js), res, sizeof res)) { printf("    %s\n", res); continue; }
             const int failed = !strncmp(res, "error:", 6) || strstr(res, "Exit code 1") != NULL;
+            rz_before(tool, js, js + strlen(js));
             flow_after(tool, js, js + strlen(js), res, sizeof res, failed, 0);
+            rz_after(tool, js, js + strlen(js), res, failed, g_fl_last_ev, g_fl_last_gain);
             const char *k = strstr(res, "\n[katana: "); printf("    %s\n", k ? k + 1 : "(no line)");
         }
         fclose(f);
+        rz_sim_end();
         return 0;
     }
+    if (!strcmp(cmd, "state")) { const char *sf = argc > 1 ? argv[1] : getenv("KATANA_RESUME_FILE"); if (!sf) { fprintf(stderr, "usage: katana flow state <file.kstate>\n"); return 1; } return rz_cmd_state(sf); }
     return flowmem_main(argc, argv);
 }

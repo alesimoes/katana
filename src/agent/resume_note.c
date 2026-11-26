@@ -1,0 +1,194 @@
+/* ---------- o bloco `resume`: tres projecoes do estado do trabalho (docs/flow-resume.md secoes 7 e 9) ----------
+ * A linha `next` (cada volta), o bloco `resume` (na reentrada) e a capsula (dentro de um resumo, ou no lugar de turnos velhos)
+ * sao o mesmo estado em tres tamanhos. Rotulos fixos, em ordem fixa, uma linha cada; a linha que nao tem o que dizer some.
+ * O bloco nunca diz o proximo passo quando ha fluxo aberto: a linha `next` vem depois e continua a ultima coisa que o modelo le. */
+#define RZ_MAX_DEF 1200
+static int rz_max(void) { const char *e = getenv("KATANA_RESUME_MAX"); int v = e && *e ? atoi(e) : RZ_MAX_DEF; return v < 400 ? (v ? 400 : RZ_MAX_DEF) : v > 3000 ? 3000 : v; }
+RZ_UNUSED static int rz_idle_min(void) { const char *e = getenv("KATANA_RESUME_IDLE_MIN"); const int v = e && *e ? atoi(e) : 30; return v > 0 ? v : 30; }
+RZ_UNUSED static int rz_flag(const char *name) { const char *e = getenv(name); return e && atoi(e) > 0; }
+static int rz_grace(void) { return g_rz.grace; }
+
+static void rz_app(char *o, size_t cap, const char *fmt, ...) {
+    const size_t n = strlen(o); if (n + 2 >= cap) return;
+    va_list ap; va_start(ap, fmt); vsnprintf(o + n, cap - n, fmt, ap); va_end(ap);
+}
+static void rz_dur(long long s, char *o, size_t cap) {
+    if (s < 60) snprintf(o, cap, "a moment");
+    else if (s < 3600) snprintf(o, cap, "%lldm", s / 60);
+    else snprintf(o, cap, "%lldh%02lldm", s / 3600, (s % 3600) / 60);
+}
+/* uma linha rotulada, cortada em max bytes sem partir um caractere */
+static void rz_lab(char *o, size_t cap, const char *label, const char *text, size_t max) {
+    if (!text[0]) return;
+    char t[700]; fc_cut(t, max + 1 < sizeof t ? max + 1 : sizeof t, text);
+    rz_app(o, cap, "%s%s\n", label, t);
+}
+/* o primeiro passo aberto do plano: numero, total e texto */
+static int rz_plan_open(int *k, int *n, char *txt, size_t cap) {
+    int total = 0, first = -1; txt[0] = 0;
+    for (const char *p = g_rz.s.todo; *p; ) {
+        const char *e = strchr(p, '\n'); const size_t l = e ? (size_t)(e - p) : strlen(p);
+        if (first < 0 && strncmp(p, "[x]", 3) != 0 && l > 0) { first = total; const char *t = l > 3 && p[0] == '[' ? p + 3 : p; while (*t == ' ') t++; char tmp[200]; snprintf(tmp, sizeof tmp, "%.*s", (int)(l - (size_t)(t - p) < 190 ? l - (size_t)(t - p) : 190), t); fc_cut(txt, cap, tmp); }
+        if (l > 0) total++;
+        if (!e) break;
+        p = e + 1;
+    }
+    *n = total; *k = first + 1;
+    return first >= 0;
+}
+static int rz_has_plan(void) { int k, n; char t[8]; return rz_plan_open(&k, &n, t, sizeof t); }
+static int rz_has_work(void) {
+    const RzState *s = &g_rz.s;
+    if (s->depth > 0 || rz_has_plan() || g_rz.ndelta > 0 || s->open_tool[0]) return 1;
+    for (int i = 0; i < RZ_NJOB; i++) if (s->job[i].id && (!s->job[i].told || s->job[i].status == RZJ_RUN || s->job[i].status == RZJ_WAIT || s->job[i].status == RZJ_DETACHED)) return 1;
+    return 0;
+}
+static const char *rz_evtext(int i) { const RzState *s = &g_rz.s; return s->ev[(s->nev == RZ_EVID ? s->ev_w + i : i) % RZ_EVID].text; }
+/* o corpo. form: 0 completo, 1 curto (reentrada dentro do processo), 2 capsula (so o estavel). lvl: quanto ja foi cortado para caber */
+static void rz_body_lvl(char *o, size_t cap, int form, int lvl) {
+    const RzState *s = &g_rz.s; o[0] = 0;
+    char b[700];
+    const int ndone = lvl >= 3 ? 0 : 3 - lvl, ndel = lvl >= 4 ? 3 : 6, nrep = lvl >= 6 ? 1 : lvl >= 5 ? 2 : 3, dec = lvl < 7;
+    if (form != 1) rz_lab(o, cap, "goal: ", s->goal[0] ? s->goal : s->last_req, 200);
+    {   /* was: a pilha de cima para baixo, depois o passo aberto do plano */
+        b[0] = 0;
+        for (int i = s->depth - 1; i >= 0; i--) rz_app(b, sizeof b, "%s%s %d/%d %s", i == s->depth - 1 ? "" : ", over ", FL_BOOK[s->stk[i].id].name, s->stk[i].st + 1, FL_BOOK[s->stk[i].id].nst, FL_BOOK[s->stk[i].id].st[s->stk[i].st].name);
+        int k, n; char pt[200];
+        if (rz_plan_open(&k, &n, pt, sizeof pt)) rz_app(b, sizeof b, "%splan step %d of %d: %s", b[0] ? "; " : "", k, n, pt);
+        rz_lab(o, cap, "was: ", b, 240);
+    }
+    if (form != 1) {      /* done: as tres mais novas que nao envelheceram; depois o que foi feito e nao mostrado */
+        b[0] = 0; int got = 0;
+        const int cnt = form == 2 ? 8 : ndone;
+        for (int i = s->nev - 1; i >= 0 && got < cnt; i--) {
+            const RzEvid *e = &s->ev[(s->nev == RZ_EVID ? s->ev_w + i : i) % RZ_EVID];
+            if (e->stale) continue;
+            rz_app(b, sizeof b, "%s%s", got ? "; " : "", e->text); got++;
+        }
+        (void)rz_evtext;
+        for (int i = 0; i < s->nfile; i++) if (s->file[i].op == RZF_MADE && !s->file[i].shown) rz_app(b, sizeof b, "%smade, not shown yet: %s", b[0] ? "; " : "", s->file[i].path);
+        rz_lab(o, cap, "done: ", b, form == 2 ? 700 : 300);
+    }
+    if (form == 2) {      /* arquivos editados */
+        b[0] = 0; int got = 0;
+        for (int i = 0; i < s->nfile; i++) if (s->file[i].op == RZF_WRITE) { rz_app(b, sizeof b, "%s%s", got ? "; " : "edited: ", s->file[i].path); got++; }
+        rz_lab(o, cap, "files: ", b, 500);
+    }
+    if (form != 2) {      /* changed: as frases da reconciliacao */
+        b[0] = 0;
+        for (int i = 0; i < g_rz.ndelta && i < ndel; i++) rz_app(b, sizeof b, "%s%s", i ? "; " : "", g_rz.delta[i]);
+        const int rest = (g_rz.ndelta > ndel ? g_rz.ndelta - ndel : 0) + g_rz.more_delta;
+        if (rest > 0) rz_app(b, sizeof b, "; and %d more change%s", rest, rest > 1 ? "s" : "");
+        rz_lab(o, cap, "changed: ", b, 400);
+        /* running: tarefas vivas, ou "none" se houve tarefa e nenhuma roda */
+        b[0] = 0; int any = 0, live = 0;
+        for (int i = 0; i < RZ_NJOB; i++) {
+            const RzJob *j = &s->job[i]; if (!j->id) continue;
+            any = 1;
+            if (j->status == RZJ_RUN || j->status == RZJ_DETACHED) { rz_app(b, sizeof b, "%stask %d (`%.60s`) running, output in %.100s", live ? "; " : "", j->id, j->cmd, j->log); live++; }
+            else if (j->status == RZJ_WAIT) { rz_app(b, sizeof b, "%stask %d (`%.60s`) waits at \"%.80s\"", live ? "; " : "", j->id, j->cmd, j->asked); live++; }
+        }
+        if (!live && any) snprintf(b, sizeof b, "none");
+        rz_lab(o, cap, "running: ", b, 240);
+    }
+    if (form != 1) {      /* do not repeat: as mortas, as mais repetidas primeiro */
+        b[0] = 0; int used[RZ_ATT] = {0};
+        for (int r = 0; r < nrep; r++) {
+            int best = -1;
+            for (int i = 0; i < s->natt; i++) if (s->att[i].dead && !used[i] && (best < 0 || s->att[i].n > s->att[best].n)) best = i;
+            if (best < 0) break;
+            used[best] = 1;
+            const RzAttempt *a = &s->att[best];
+            if (!strcmp(a->tool, a->subj) || !a->subj[0]) rz_app(b, sizeof b, "%s%s -> %s (x%d)", r ? "; " : "", a->tool, a->cause, a->n);
+            else rz_app(b, sizeof b, "%s%s %s -> %s (x%d)", r ? "; " : "", a->tool, a->subj, a->cause, a->n);
+        }
+        rz_lab(o, cap, "do not repeat: ", b, 300);
+    }
+    if (form != 1 || s->ask[0]) {
+        b[0] = 0;
+        if (s->ask[0] && form != 2) snprintf(b, sizeof b, "\"%.150s\" -> waiting for an answer", s->ask);
+        else if (dec && s->ndec) { const RzDecision *d = &s->dec[(s->ndec == RZ_DEC ? s->dec_w + s->ndec - 1 : s->ndec - 1) % RZ_DEC]; snprintf(b, sizeof b, "\"%.100s\" -> the user answered: %.80s", d->q, d->a); }
+        rz_lab(o, cap, "asked: ", b, 200);
+    }
+    if (form != 2 && !s->depth) {      /* sem fluxo aberto, o bloco tem a sua propria ultima linha */
+        int k, n; char pt[200];
+        if (rz_plan_open(&k, &n, pt, sizeof pt)) rz_app(o, cap, "next: %s\n", pt);
+        else rz_app(o, cap, "next: tell the user in two sentences where this work stands and ask how to go on\n");
+    }
+    size_t l = strlen(o); while (l && o[l - 1] == '\n') o[--l] = 0;
+}
+/* o corpo, cortado por etapas (a ordem da tabela de 7.2) ate caber em cap bytes */
+static void rz_body(char *o, size_t cap, int form) {
+    size_t limit = form == 2 ? 2500 : form == 1 ? 500 : (size_t)rz_max();
+    if (limit >= cap) limit = cap - 1;
+    char *tmp = (char *)malloc(cap < 4000 ? 4000 : cap);
+    if (!tmp) { o[0] = 0; return; }
+    for (int lvl = 0; lvl <= 8; lvl++) {
+        rz_body_lvl(tmp, cap < 4000 ? 4000 : cap, form, lvl);
+        if (strlen(tmp) <= limit || lvl == 8) break;
+    }
+    if (strlen(tmp) > limit) { char *c = tmp + limit; while (c > tmp && ((unsigned char)*c & 0xC0) == 0x80) c--; *c = 0; }
+    rz_cpy(o, cap, tmp); free(tmp);
+}
+static void rz_reason_text(int r, char *o, size_t cap) {
+    const long long now = (long long)time(NULL); char d[32];
+    if (r == RZR_SESSION) { rz_dur(now - (g_rz.t_saved ? g_rz.t_saved : now), d, sizeof d); snprintf(o, cap, "session reopened after %s", d); }
+    else if (r == RZR_INTERRUPT) snprintf(o, cap, "you were interrupted");
+    else if (r == RZR_IDLE) { rz_dur(g_rz.s.t_clean ? now - g_rz.s.t_clean : 0, d, sizeof d); snprintf(o, cap, "back after %s", d); }
+    else if (r == RZR_RECALL) snprintf(o, cap, "back to earlier work");
+    else snprintf(o, cap, "state of the work");
+}
+/* o bloco do pedido que segue a reentrada; 0 = nada a dizer (sem trabalho, sem bloco). Gasta a reentrada pendente */
+static size_t rz_block(char *out, size_t cap) {
+    out[0] = 0;
+    const int reason = g_rz.reason;
+    if (!rz_on() || !reason || reason == RZR_SUMMARY || reason == RZR_TASK) { if (reason == RZR_SUMMARY) g_rz.reason = 0; return 0; }
+    g_rz.reason = 0;
+    if (!rz_has_work()) return 0;
+    char body[3200], why[64];
+    rz_body(body, sizeof body, reason == RZR_INTERRUPT || reason == RZR_IDLE ? 1 : 0);
+    if (!body[0]) return 0;
+    rz_reason_text(reason, why, sizeof why);
+    const size_t n = KNOTE(RESUME, out, cap, why, body);
+    if (n >= cap) { out[0] = 0; return 0; }
+    rz_ev('N', RZ_RNAME[reason], rz_i((long long)n), NULL);
+    fl_log("resume\tenter\t%s\t%d", RZ_RNAME[reason], (int)n);
+    g_rz.score_left = 3; g_rz.sc_on = g_rz.sc_dead = g_rz.sc_dup = 0; g_rz.sc_reason = reason;
+    return n;
+}
+/* a capsula dentro de um resumo (context.c, loop.c): so o estavel; 1 se acrescentou algo */
+RZ_UNUSED static int rz_capsule(Buf *o) {
+    if (!rz_on() || g_ct_depth > 1) return 0;
+    char body[3200]; rz_body(body, sizeof body, 2);
+    if (!body[0]) return 0;
+    buf_str(o, KNF_RESUME_CAPSULE); buf_str(o, body);
+    return 1;
+}
+/* ---------- katana flow state [arquivo]: o arquivo de estado impresso como bloco e como capsula (sem modelo) ---------- */
+static int rz_cmd_state(const char *file) {
+    memset(&g_rz, 0, sizeof g_rz);
+    if (!rz_replay(file)) { fprintf(stderr, "flow state: no state in %s\n", file); return 1; }
+    char body[3200];
+    g_rz.t_saved = g_rz.s.t_event;
+    rz_body(body, sizeof body, 0); printf("--- block (full form)\n%s\n", body);
+    rz_body(body, sizeof body, 2); printf("--- capsule\n%s\n", body);
+    return 0;
+}
+/* simulador (katana flow sim): R = reinicio; guarda o estado, limpa a memoria, le de volta e reconcilia */
+static void rz_sim_begin(void) {
+    char p[200]; snprintf(p, sizeof p, "/tmp/katana-flow-sim-%ld.kstate", (long)getpid());
+    remove(p);
+    if (!getenv("KATANA_RESUME_FILE")) setenv("KATANA_RESUME_FILE", p, 1);
+    rz_close(); rz_open("", 0);
+}
+static void rz_sim_restart(void) {
+    rz_checkpoint();
+    rz_release(); memset(&g_rz.s, 0, sizeof g_rz.s);
+    flow_reset();
+    if (rz_open("", 0)) { g_rz.reason = RZR_SESSION; g_rz.grace = 1; }
+}
+static void rz_sim_end(void) {
+    const char *p = getenv("KATANA_RESUME_FILE");
+    rz_close();
+    if (p && !strncmp(p, "/tmp/katana-flow-sim-", 21)) { char q[260]; remove(p); snprintf(q, sizeof q, "%.200s.lock", p); remove(q); unsetenv("KATANA_RESUME_FILE"); }
+}

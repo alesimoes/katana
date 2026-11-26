@@ -740,7 +740,11 @@ static int agent(Model *m, int max_tokens, float temp) {
             static char fn[9000];
             if (cml) { rz_request_begin(ureq); if (says_already_done(ureq)) rz_forgive_attempts(); }      /* estado duravel do trabalho (resume.c): o pedido; o que o usuario diz ja feito nao e mais "nao repita" */
             const int cmdreq = asks_for_command(ureq) || says_already_done(ureq);      /* essas notas ja mandam o que fazer: a linha do fluxo nao concorre com elas */
-            if (cml && flow_request(ureq, fn, sizeof fn) && !cmdreq && strlen(line) + strlen(fn) + 2 < sizeof line) strcat(line, fn);
+            const size_t fnl = cml ? flow_request(ureq, fn, sizeof fn) : 0;
+            static char rb[4000];
+            const size_t rbl = cml ? rz_block(rb, sizeof rb) : 0;      /* o bloco de reentrada (resume_note.c) vai na frente da linha do fluxo, que continua a ultima coisa que o modelo le */
+            if (rbl && strlen(line) + rbl + 2 < sizeof line) strcat(line, rb);
+            if (fnl && !cmdreq && strlen(line) + strlen(fn) + 2 < sizeof line) strcat(line, fn);
         }
         if (ublk) uioe_commit(usess);      /* o que o bloco mostrou conta como mostrado para o Find e o Read (o rr_reset acima apagou o estado anterior) */
         {   /* a lista de um pedido anterior ainda tem passos em aberto: a mensagem nova do usuario vem antes deles */
