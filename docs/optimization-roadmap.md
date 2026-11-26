@@ -123,6 +123,31 @@ on the CPU (`lowbit_bf16_dot`, ~15 G weights/s on one thread in cache). The 8-th
 runs on this shared machine (IQ2_S 8-thread: 34–54 in three runs); the 1-thread ones by ~10%. Q6_K already had
 the VNNI kernel (`dot_q6k_v`) and is unchanged.
 
+### 3.2 Cold-expert path on the CPU (`moe_cpu_multi`, implemented 2026-11-26, NOT measured)
+
+Goal: cut the ~11-14 ms/token that cold experts cost on the CPU in Qwen3.6-35B-A3B generation. Everything below
+is on by default and each piece has an off switch. Nothing was measured on the real Qwen3.6 (only a correctness
+check on synthetic Q4_K/Q6_K experts); the expected gain is unknown until measured.
+
+| Switch | What it does |
+|---|---|
+| `KATANA_MOE_ROWS=0` | off: 4 weight rows per step (`dot_q4k_v4`, `dot_q6k_v4`, AVX-512 VNNI, runtime-selected; AVX2 machines keep the single-row path). The activation loads of a block are shared by 4 rows and the 4 accumulator chains are independent. Same integer arithmetic as `dot_q4k_v`/`dot_q6k_v`; only the float summation order differs. |
+| `KATANA_MOE_PF=0` | off: software prefetch (`__builtin_prefetch`) of the next 4 rows (next row in the scalar tail) of the same expert matrix, inside each pool job. Rows of a chunk are contiguous, so each thread already reads one contiguous stream. |
+| `KATANA_MOE_ACT=0` | off: vectorized SiLU*up (`silu_mul_v`, degree-6 polynomial exp, relative error ~3e-7 against `expf`). Not used for GELU (Gemma 4). |
+| `KATANA_MOE_ALIGN=0` | off: pool slices rounded up to a multiple of 16 rows (64 bytes of float output), so two threads never write the same cache line of `hg/hu/outs`. |
+
+The jobs (`moe_job`, `moe_gjob`, `moe_down_job`, `moe_gdown_job`) now walk segments of consecutive rows of one
+matrix and call `moe_rows`. Not done: a gate+up fused pass (the two matrices are different weights, so the only
+shared work is the already-quantized activation, which the 4-row kernel now amortizes), NUMA-aware placement (the
+test machine is single-socket), and cross-job prefetch of the next expert pair (the pool gives no ordering
+guarantee between jobs).
+
+Check: `MOEB_SYNTH=1 tools/moebench/moebench x` (no model, no GPU) builds random Q4_K/Q6_K experts and compares
+the new path against all switches off through `moe_cpu_multi` (1 token and a grouped batch), `moe_rows` with row
+counts 1..9 at unaligned starts, and `silu_mul_v`. Result: relative difference of the outputs 6e-7 to 8e-6 (the
+SiLU polynomial plus summation order), `silu_mul_v` 3e-7. `MOEB_CHECK=1 moebench <model.gguf>` does the same on
+real expert tensors (written, not run). `katana lbtest` still passes.
+
 ## 4. Expert cache (MoE)
 
 We already have: slots per layer, heat with decay, cold expert on the CPU, background loading,

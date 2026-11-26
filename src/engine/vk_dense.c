@@ -1339,13 +1339,52 @@ static inline float moe_dot(const Mat *W, size_t r, int cols) {
     if (W->type == T_Q5_1) return dot_q51_i(W->q + r * W->stride, cols);
     return dot_row(W, r, NULL, NULL, cols);
 }
+/* opcoes do caminho frio dos especialistas, todas ligadas (=0 desliga):
+   KATANA_MOE_PF    prefetch por software das proximas linhas de pesos
+   KATANA_MOE_ROWS  4 linhas por passo (VNNI) compartilhando a carga da ativacao
+   KATANA_MOE_ACT   SiLU vetorizado (exp polinomial)
+   KATANA_MOE_ALIGN fatias do pool multiplas de 16 linhas (sem falso compartilhamento nas saidas) */
+static int moe_opt_pf = -1, moe_opt_rows = -1, moe_opt_act = -1, moe_opt_align = -1;
+static int moe_env_on(const char *n) { const char *v = getenv(n); return !(v && atoi(v) == 0); }
+static void moe_opt_init(void) {
+    if (moe_opt_pf >= 0) return;
+    moe_opt_pf = moe_env_on("KATANA_MOE_PF"); moe_opt_rows = moe_env_on("KATANA_MOE_ROWS");
+    moe_opt_act = moe_env_on("KATANA_MOE_ACT"); moe_opt_align = moe_env_on("KATANA_MOE_ALIGN");
+}
+/* prefetch das linhas r0..r0+n-1 de W (contiguas na memoria), uma linha de cache por vez */
+static inline void moe_prefetch(const Mat *W, size_t r0, int n, size_t rows_total) {
+    if (!W->q || r0 >= rows_total) return;
+    if (r0 + (size_t)n > rows_total) n = (int)(rows_total - r0);
+    const char *p = (const char *)(W->q + r0 * W->stride), *e = p + (size_t)n * W->stride;
+    for (; p < e; p += 64) __builtin_prefetch(p, 0, 0);
+}
+/* n linhas consecutivas r0.. de W contra a entrada quantizada atual (xq_tls); dst[0..n-1] */
+static void moe_rows(const Mat *W, size_t r0, int n, int cols, size_t rows_total, float *dst) {
+    int i = 0;
+#if HAVE_VNNI
+    if (moe_opt_rows && cpu_vnni && W->q && !W->f && !cpu_exact && (W->type == T_Q4_K || W->type == T_Q6_K)) {
+        for (; i + 4 <= n; i += 4) {
+            if (moe_opt_pf) moe_prefetch(W, r0 + i + 4, 4, rows_total);
+            if (W->type == T_Q4_K) dot_q4k_v4(W->q + (r0 + i) * W->stride, W->stride, cols, dst + i);
+            else dot_q6k_v4(W->q + (r0 + i) * W->stride, W->stride, cols, dst + i);
+        }
+    }
+#endif
+    for (; i < n; i++) {
+        if (moe_opt_pf) moe_prefetch(W, r0 + i + 1, 1, rows_total);
+        dst[i] = moe_dot(W, r0 + i, cols);
+    }
+}
 static void moe_job(void *c, int i0, int i1) {
     const MoeJob *q = c;
-    for (int i = i0; i < i1; i++) {
+    for (int i = i0; i < i1;) {
         const int j = i / (2 * q->H), r = i % (2 * q->H);
+        const int side = r >= q->H, rr = r - side * q->H;
+        int n = q->H - rr; if (n > i1 - i) n = i1 - i;
         xq_tls = &q->xin[q->xi[j]];
-        if (r < q->H) q->hg[(size_t)j * q->H + r] = moe_dot(&q->eg[q->ex[j]], (size_t)r, q->d);
-        else q->hu[(size_t)j * q->H + r - q->H] = moe_dot(&q->eu[q->ex[j]], (size_t)(r - q->H), q->d);
+        const Mat *W = side ? &q->eu[q->ex[j]] : &q->eg[q->ex[j]];
+        moe_rows(W, (size_t)rr, n, q->d, (size_t)q->H, (side ? q->hu : q->hg) + (size_t)j * q->H + rr);
+        i += n;
     }
     xq_tls = NULL;
 }
@@ -1355,25 +1394,33 @@ static void moe_job(void *c, int i0, int i1) {
    qualquer que seja o numero de tokens que o escolheram */
 static void moe_gjob(void *c, int i0, int i1) {
     const MoeJob *q = c;
-    for (int i = i0; i < i1; i++) {
+    for (int i = i0; i < i1;) {
         const int g = i / (2 * q->H), r = i % (2 * q->H);
         const int *pj = q->ord + q->gs[g];
         const int e = q->ex[pj[0]];
-        if (r < q->H) {
-            for (int u = 0; u < q->gn[g]; u++) { xq_tls = &q->xin[q->xi[pj[u]]]; q->hg[(size_t)pj[u] * q->H + r] = moe_dot(&q->eg[e], (size_t)r, q->d); }
-        } else {
-            for (int u = 0; u < q->gn[g]; u++) { xq_tls = &q->xin[q->xi[pj[u]]]; q->hu[(size_t)pj[u] * q->H + r - q->H] = moe_dot(&q->eu[e], (size_t)(r - q->H), q->d); }
+        const int side = r >= q->H, rr = r - side * q->H;
+        int n = q->H - rr; if (n > i1 - i) n = i1 - i;
+        const Mat *W = side ? &q->eu[e] : &q->eg[e];
+        for (int u = 0; u < q->gn[g]; u++) {
+            xq_tls = &q->xin[q->xi[pj[u]]];
+            moe_rows(W, (size_t)rr, n, q->d, (size_t)q->H, (side ? q->hu : q->hg) + (size_t)pj[u] * q->H + rr);
         }
+        i += n;
     }
     xq_tls = NULL;
 }
 static void moe_gdown_job(void *c, int i0, int i1) {
     const MoeJob *q = c;
-    for (int i = i0; i < i1; i++) {
+    for (int i = i0; i < i1;) {
         const int g = i / q->d, r = i % q->d;
         const int *pj = q->ord + q->gs[g];
         const int e = q->ex[pj[0]];
-        for (int u = 0; u < q->gn[g]; u++) { xq_tls = &q->xh[pj[u]]; q->outs[(size_t)pj[u] * q->d + r] = moe_dot(&q->ed[e], (size_t)r, q->H); }
+        int n = q->d - r; if (n > i1 - i) n = i1 - i;
+        for (int u = 0; u < q->gn[g]; u++) {
+            xq_tls = &q->xh[pj[u]];
+            moe_rows(&q->ed[e], (size_t)r, n, q->H, (size_t)q->d, q->outs + (size_t)pj[u] * q->d + r);
+        }
+        i += n;
     }
     xq_tls = NULL;
 }
@@ -1381,6 +1428,10 @@ static void moe_act_job(void *c, int i0, int i1) {
     const MoeJob *q = c;
     for (int j = i0; j < i1; j++) {
         float *g = q->hg + (size_t)j * q->H; const float *u = q->hu + (size_t)j * q->H;
+#if HAVE_VNNI
+        if (moe_opt_act && !g_gelu && cpu_vnni) silu_mul_v(g, u, q->H);
+        else
+#endif
         for (int i = 0; i < q->H; i++) g[i] = act_glu(g[i]) * u[i];
         xq_tls = &q->xh[j]; xq_prepare(g, q->H);
     }
@@ -1388,10 +1439,12 @@ static void moe_act_job(void *c, int i0, int i1) {
 }
 static void moe_down_job(void *c, int i0, int i1) {
     const MoeJob *q = c;
-    for (int i = i0; i < i1; i++) {
+    for (int i = i0; i < i1;) {
         const int j = i / q->d, r = i % q->d;
+        int n = q->d - r; if (n > i1 - i) n = i1 - i;
         xq_tls = &q->xh[j];
-        q->outs[i] = moe_dot(&q->ed[q->ex[j]], (size_t)r, q->H);
+        moe_rows(&q->ed[q->ex[j]], (size_t)r, n, q->H, (size_t)q->d, q->outs + i);
+        i += n;
     }
     xq_tls = NULL;
 }
@@ -1408,6 +1461,7 @@ static void moe_cpu_multi(Model *m, const Layer *L, const int *ex, const int *xi
         xh = xalloc(MOE_NMAX, sizeof(XQ));
     }
     if (n <= 0) return;
+    moe_opt_init();
     if (n > MOE_NMAX || n_x > GPU_BMAX) die("MoE: pares demais num lote");
     if (et_on && et_wrap(m, L, ex, xi, n, n_x, xs, outs)) return;     /* especialistas da arena de RAM (expert_tier.c) */
     if (!moe_int(&L->eg[ex[0]]) || !moe_int(&L->eu[ex[0]]) || !moe_int(&L->ed[ex[0]]) || pool.n <= 1) {
@@ -1438,12 +1492,14 @@ static void moe_cpu_multi(Model *m, const Layer *L, const int *ex, const int *xi
     }
     int total = (job.ng ? job.ng : n) * 2 * H, chunk = total / (pool.n * 8), minc = 32768 / d + 1;
     if (chunk < minc) chunk = minc;
+    if (moe_opt_align) chunk = (chunk + 15) & ~15;
     if (moe_prof_on) { t1 = now_sec(); moe_prof[0] += t1 - t0; t0 = t1; }
     pool_for(job.ng ? moe_gjob : moe_job, &job, total, chunk);
     if (moe_prof_on) { t1 = now_sec(); moe_prof[1] += t1 - t0; t0 = t1; }
     pool_for(moe_act_job, &job, n, 1);
     total = (job.ng ? job.ng : n) * d; chunk = total / (pool.n * 8); minc = 32768 / H + 1;
     if (chunk < minc) chunk = minc;
+    if (moe_opt_align) chunk = (chunk + 15) & ~15;
     if (moe_prof_on) { t1 = now_sec(); moe_prof[2] += t1 - t0; t0 = t1; }
     pool_for(job.ng ? moe_gdown_job : moe_down_job, &job, total, chunk);
     if (moe_prof_on) moe_prof[3] += now_sec() - t0;
