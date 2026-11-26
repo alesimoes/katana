@@ -8,8 +8,10 @@
 /* mfd: ponta mestre do pseudo-terminal da tarefa, guardada como fd+1 (0 = sem terminal). Fecha quando a tarefa acaba ou e
  * encerrada. pump: o copiador do terminal para o arquivo. slave: nome do terminal (/dev/pts/N). asked: quando o katana
  * devolveu "waiting for input" ao modelo (0 = nao esta esperando); asked_sz: tamanho da saida naquele momento. Uma pergunta
- * sem resposta e sem saida nova por KATANA_PROMPT_MAX segundos (padrao 900) encerra a tarefa (job_poll). */
-typedef struct { int id; pid_t pid, pump; int done, rc, mfd; char log[1300], cmd[200], slave[64]; time_t t0, asked; long asked_sz; } Job;
+ * sem resposta e sem saida nova por KATANA_PROMPT_MAX segundos (padrao 900) encerra a tarefa (job_poll). asked_label: o texto da
+ * ultima pergunta mostrada ao modelo; typed: o modelo escreveu uma resposta depois dela; asked_rep: quantas vezes a MESMA
+ * pergunta voltou depois de uma resposta do modelo (na segunda o katana pergunta ao usuario). */
+typedef struct { int id; pid_t pid, pump; int done, rc, mfd; char log[1300], cmd[200], slave[64]; time_t t0, asked; long asked_sz; char asked_label[240]; int typed, asked_rep; } Job;
 static Job g_jobs[JOB_N];
 static int g_job_seq, g_job_exit;
 

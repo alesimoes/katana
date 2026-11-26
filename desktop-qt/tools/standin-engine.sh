@@ -91,19 +91,35 @@ while IFS= read -r line; do
         printf 'Mudei o rumo como voce pediu.\n'
         printf '\001READY\n';;
     *"pede segredo"*)
-        # um comando do Bash para numa pergunta de senha: o motor pede o segredo ao desktop (SECRET), escreve no terminal do
-        # comando e o modelo so ve a marca. Aqui o segredo recebido vai para um arquivo, para o selftest conferir que chegou.
+        # um comando do Bash para numa pergunta de senha: o motor pede o segredo ao desktop (ASKINPUT mascarado), escreve no
+        # terminal do comando e o modelo so ve a marca. Aqui o segredo recebido vai para um arquivo, para o selftest conferir.
         printf '\001TOOL Bash\t{"command":"tool login","description":"Entrar na conta"}\tEntrar na conta\n'
-        printf '\001SECRET 7 Password for ana:\n'
+        printf '\001ASKINPUT 7 1 Password for ana:\t\tLogging in to the tool service...\\nPassword for ana:\t\n'
         IFS= read -r s
         case "$s" in
-        "${SOH}SECRET 7	"*) printf '%s' "${s#"${SOH}SECRET 7	"}" > "${HOME:-/tmp}/.standin-secret"
+        "${SOH}ASKINPUT 7	"*) printf '%s' "${s#"${SOH}ASKINPUT 7	"}" > "${HOME:-/tmp}/.standin-secret"
             printf '\001TOOLOUT Bash\tPassword for ana: [secret entered by the user]\\nlogged in\n'
             printf 'Login feito.\n';;
-        "${SOH}SECRETCANCEL 7"*) printf 'cancel' > "${HOME:-/tmp}/.standin-secret"
+        "${SOH}ASKINPUTCANCEL 7"*) printf 'cancel' > "${HOME:-/tmp}/.standin-secret"
             printf '\001TOOLOUT Bash\tPassword for ana: [secret cancelled]\n'
             printf 'O login foi cancelado.\n';;
         *) printf 'other' > "${HOME:-/tmp}/.standin-secret";;
+        esac
+        printf '\001READY\n';;
+    *"pede caminho"*)
+        # o modelo nao sabe a resposta (SendInput ask_user=true): o motor pede ao usuario num dialogo aberto, com o contexto
+        # da pergunta e as dicas que achou no disco; a resposta volta ao modelo como [user answered: "..."]
+        printf '\001TOOL SendInput\t{"task_id":"1","ask_user":true,"ask":"Where is the downloaded Tool.xip?"}\tResponder ao comando\n'
+        printf '\001ASKINPUT 8 0 Path to Tool.xip:\tWhere is the downloaded Tool.xip?\tLogged in as test-user.\\nPlease download Tool from the vendor site and enter the path to the downloaded Tool.xip.\\n\\nPath to Tool.xip:\t/home/ana/Downloads/Tool_16.xip\037/home/ana/Desktop/Tool.xip\037/home/ana/Tool-old.xip\n'
+        IFS= read -r s
+        case "$s" in
+        "${SOH}ASKINPUT 8	"*) a=${s#"${SOH}ASKINPUT 8	"}; printf '%s' "$a" > "${HOME:-/tmp}/.standin-input"
+            printf '\001TOOLOUT SendInput\tThe user typed the answer into task 1: [user answered: \"%s\"].\n' "$a"
+            printf 'O caminho foi informado.\n';;
+        "${SOH}ASKINPUTCANCEL 8"*) printf 'cancel' > "${HOME:-/tmp}/.standin-input"
+            printf '\001TOOLOUT SendInput\tThe user cancelled the question of task 1; Ctrl+C was sent to the task.\n'
+            printf 'A pergunta foi cancelada.\n';;
+        *) printf 'other' > "${HOME:-/tmp}/.standin-input";;
         esac
         printf '\001READY\n';;
     /session*|/cd*) ;;                                   # comandos silenciosos: sem READY

@@ -46,7 +46,11 @@ ApplicationWindow {
     Connections {
         target: backend
         function onPasswordRequested(retry) { pwDlg.retry = retry; pwField.text = ""; pwDlg.open(); pwField.forceActiveFocus(); }
-        function onSecretRequested(id, label) { secDlg.reqId = id; secDlg.label = label; secField.text = ""; secDlg.open(); secField.forceActiveFocus(); }
+        function onInputRequested(id, masked, label, question, context, hints) {
+            inDlg.reqId = id; inDlg.masked = masked; inDlg.label = label; inDlg.question = question; inDlg.context = context; inDlg.hints = hints;
+            inField.text = (!masked && hints.length > 0) ? hints[0] : "";
+            inDlg.open(); inField.forceActiveFocus(); inField.selectAll();
+        }
         function onAskRequested(kind, what, detail) { askDlg.kind = kind; askDlg.what = what; askDlg.detail = detail; askDlg.open(); }
         function onAskClosed() { askDlg.answered = true; askDlg.close(); }
     }
@@ -131,54 +135,92 @@ ApplicationWindow {
         }
     }
 
-    // segredo pedido por um comando (senha, frase secreta, PIN, codigo de verificacao): vai direto ao comando, sem passar pelo modelo
+    // pergunta de um comando que o usuario responde (marcador ASKINPUT): segredo (senha, PIN, codigo: campo mascarado, o modelo
+    // nao ve o texto) ou pergunta comum que o modelo nao soube responder (campo aberto, pre-preenchido com a melhor sugestao;
+    // a resposta volta ao modelo). O texto vai direto ao terminal do comando.
     Popup {
-        id: secDlg
-        objectName: "secretDialog"
+        id: inDlg
+        objectName: "inputDialog"
         modal: true
         closePolicy: Popup.NoAutoClose
         anchors.centerIn: Overlay.overlay
-        width: Math.min(460, win.width - 40)
+        width: Math.min(560, win.width - 40)
         padding: 18
         property int reqId: 0
+        property bool masked: false
         property string label: ""
+        property string question: ""
+        property string context: ""
+        property var hints: []
         property bool answered: false
         onOpened: answered = false
-        onClosed: { if (!answered) backend.cancelSecret(reqId); secField.text = ""; }
+        onClosed: { if (!answered) backend.cancelInput(reqId); inField.text = ""; }
         function answer(ok) {
             answered = true;
-            if (ok) backend.sendSecret(reqId, secField.text); else backend.cancelSecret(reqId);
-            secField.text = "";
+            if (ok) backend.answerInput(reqId, inField.text); else backend.cancelInput(reqId);
+            inField.text = "";
             close();
         }
         background: Rectangle { radius: 14; color: Theme.card; border.color: Theme.bd }
         contentItem: Column {
             spacing: 10
-            Text { font.family: Theme.sans; text: "O comando pede um segredo"; color: Theme.fg; font.pixelSize: 16; font.bold: true }
+            Text { objectName: "inputTitle"; font.family: Theme.sans; text: inDlg.masked ? "O comando pede um segredo" : "O comando espera uma resposta"
+                color: Theme.fg; font.pixelSize: 16; font.bold: true }
             Text { font.family: Theme.sans; width: parent.width; wrapMode: Text.Wrap; color: Theme.mut; font.pixelSize: 13
-                text: "O que você digitar vai direto para o comando. O modelo não vê o texto, e ele não fica no histórico nem nos logs." }
+                text: inDlg.masked ? "O que você digitar vai direto para o comando. O modelo não vê o texto, e ele não fica no histórico nem nos logs."
+                                   : (inDlg.question !== "" ? inDlg.question : "O modelo não sabe a resposta. O que você digitar vai para o comando, e o modelo fica sabendo o valor.") }
             Rectangle {
-                visible: secDlg.label !== ""
-                width: parent.width; height: secLbl.implicitHeight + 16; radius: 8
+                visible: inDlg.context !== "" || inDlg.label !== ""
+                width: parent.width; height: Math.min(inCtx.implicitHeight + 16, 180); radius: 8; clip: true
                 color: Theme.dark ? "#0E0B12" : "#F1EEF5"; border.color: Theme.bd
-                Text { id: secLbl; objectName: "secretLabel"; x: 8; y: 8; width: parent.width - 16; text: secDlg.label
-                    wrapMode: Text.WrapAnywhere; color: Theme.fg; font.family: Theme.mono; font.pixelSize: 12 }
+                Flickable {
+                    id: inFlick
+                    anchors.fill: parent; anchors.margins: 8
+                    contentHeight: inCtx.implicitHeight; clip: true
+                    onContentHeightChanged: contentY = Math.max(0, contentHeight - height)
+                    Text { id: inCtx; objectName: "inputContext"; width: inFlick.width
+                        text: inDlg.context !== "" ? inDlg.context : inDlg.label
+                        wrapMode: Text.WrapAnywhere; color: Theme.fg; font.family: Theme.mono; font.pixelSize: 12 }
+                }
+            }
+            Text { objectName: "inputLabel"; visible: inDlg.label !== ""; width: parent.width; text: inDlg.label; elide: Text.ElideRight
+                color: Theme.fg; font.family: Theme.mono; font.pixelSize: 12; font.bold: true }
+            Text { visible: inDlg.hints.length > 0; font.family: Theme.sans; text: "Sugestões (clique para usar):"; color: Theme.mut; font.pixelSize: 12 }
+            Flow {
+                visible: inDlg.hints.length > 0
+                width: parent.width; spacing: 6
+                Repeater {
+                    model: inDlg.hints
+                    delegate: Button {
+                        objectName: "inputHint" + index
+                        text: modelData
+                        flat: inField.text !== modelData
+                        highlighted: inField.text === modelData
+                        width: Math.min(implicitWidth, inDlg.availableWidth)
+                        contentItem: Text { text: modelData; elide: Text.ElideMiddle; font.family: Theme.mono; font.pixelSize: 12
+                            color: inField.text === modelData ? Theme.acfg : Theme.fg
+                            horizontalAlignment: Text.AlignLeft; verticalAlignment: Text.AlignVCenter }
+                        background: Rectangle { radius: 6; color: inField.text === modelData ? Theme.ac : (parent.hovered ? Theme.hov : "transparent"); border.color: Theme.bd }
+                        onClicked: { inField.text = modelData; inField.forceActiveFocus(); }
+                    }
+                }
             }
             TextField {
-                id: secField
-                objectName: "secretField"
+                id: inField
+                objectName: "inputField"
                 width: parent.width
-                echoMode: TextInput.Password
-                placeholderText: "Senha ou código"
+                echoMode: inDlg.masked ? TextInput.Password : TextInput.Normal
+                placeholderText: inDlg.masked ? "Senha ou código" : "Resposta para o comando"
                 color: Theme.fg
-                Accessible.name: "Segredo pedido pelo comando"
-                onAccepted: secDlg.answer(true)
+                font.family: inDlg.masked ? Theme.sans : Theme.mono
+                Accessible.name: inDlg.masked ? "Segredo pedido pelo comando" : "Resposta para o comando"
+                onAccepted: inDlg.answer(true)
             }
             Row {
                 spacing: 8
                 anchors.right: parent.right
-                Button { objectName: "secretCancel"; text: "Cancelar"; onClicked: secDlg.answer(false) }
-                Button { objectName: "secretSend"; text: "Enviar"; highlighted: true; onClicked: secDlg.answer(true) }
+                Button { objectName: "inputCancel"; text: "Cancelar"; onClicked: inDlg.answer(false) }
+                Button { objectName: "inputSend"; text: "Enviar"; highlighted: true; onClicked: inDlg.answer(true) }
             }
         }
     }

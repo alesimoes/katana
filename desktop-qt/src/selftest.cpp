@@ -1050,18 +1050,24 @@ int runStandinTest(Backend &be, QQuickWindow *win, const QString &capDir)
                 check(waitFor([&] { return be.ready(); }, 10000), "pin: o pedido terminou sem ser interrompido");
                 check(!be.steer("fora do ciclo"), "pin: fora do ciclo o STEER e recusado (a mensagem vai pelo envio normal)");
             }
-            {   // segredo pedido por um comando (SECRET): dialogo mascarado, texto direto ao motor, fora das mensagens e da sessao
+            {   // segredo pedido por um comando (ASKINPUT mascarado): texto direto ao motor, fora das mensagens e da sessao
                 const QString secFile = QDir::homePath() + "/.standin-secret";
                 const QString secret = QStringLiteral("s3gr3do-de-teste-91");
                 QFile::remove(secFile);
                 be.send("pede segredo");
-                check(waitFor([&] { QQuickItem *f = c.item("secretField"); return f && f->isVisible(); }, 10000), "segredo: dialogo aberto pelo marcador SECRET");
-                QQuickItem *lbl = c.item("secretLabel");
-                check(lbl && lbl->property("text").toString() == "Password for ana:", "segredo: dialogo mostra o rotulo do prompt");
-                QQuickItem *sf = c.item("secretField");
+                check(waitFor([&] { QQuickItem *f = c.item("inputField"); return f && f->isVisible(); }, 10000), "segredo: dialogo aberto pelo marcador ASKINPUT");
+                QQuickItem *lbl = c.item("inputLabel");
+                check(lbl && lbl->property("text").toString() == "Password for ana:", "segredo: dialogo mostra a pergunta do terminal");
+                QQuickItem *cx = c.item("inputContext");
+                check(cx && cx->property("text").toString().contains("Logging in to the tool service...\nPassword"), "segredo: contexto de varias linhas");
+                QQuickItem *sf = c.item("inputField");
                 check(sf && sf->property("echoMode").toInt() == 2, "segredo: campo mascarado (Password)");
+                check(sf && sf->property("text").toString().isEmpty(), "segredo: campo vazio, sem sugestao");
+                check(!c.item("inputHint0") || !c.item("inputHint0")->isVisible(), "segredo: sem sugestoes");
                 if (sf) sf->setProperty("text", secret);
-                if (QQuickItem *sb2 = c.item("secretSend")) c.click(sb2);
+                QTest::qWait(300);
+                c.grab("46-entrada-segredo-escuro.png");
+                if (QQuickItem *sb2 = c.item("inputSend")) c.click(sb2);
                 check(waitFor([&] { QFile f(secFile); return f.open(QIODevice::ReadOnly) && QString::fromUtf8(f.readAll()) == secret; }, 10000), "segredo: o texto chegou ao motor sem mudanca");
                 check(waitFor([&] { return be.ready(); }, 10000), "segredo: o pedido terminou");
                 bool leak = false;
@@ -1078,10 +1084,42 @@ int runStandinTest(Backend &be, QQuickWindow *win, const QString &capDir)
                 check(!fleak, "segredo: nenhum arquivo de sessao guarda o texto");
                 QFile::remove(secFile);
                 be.send("pede segredo de novo");
-                check(waitFor([&] { QQuickItem *f = c.item("secretField"); return f && f->isVisible(); }, 10000), "segredo: dialogo de novo");
-                if (QQuickItem *cb2 = c.item("secretCancel")) c.click(cb2);
-                check(waitFor([&] { QFile f(secFile); return f.open(QIODevice::ReadOnly) && f.readAll() == "cancel"; }, 10000), "segredo: Cancelar manda SECRETCANCEL");
+                check(waitFor([&] { QQuickItem *f = c.item("inputField"); return f && f->isVisible(); }, 10000), "segredo: dialogo de novo");
+                if (QQuickItem *cb2 = c.item("inputCancel")) c.click(cb2);
+                check(waitFor([&] { QFile f(secFile); return f.open(QIODevice::ReadOnly) && f.readAll() == "cancel"; }, 10000), "segredo: Cancelar manda ASKINPUTCANCEL");
                 check(waitFor([&] { return be.ready(); }, 10000), "segredo: pedido cancelado terminou");
+            }
+            {   // pergunta comum que o modelo passou ao usuario (ASKINPUT nao mascarado): campo aberto pre-preenchido, sugestoes clicaveis
+                const QString inFile = QDir::homePath() + "/.standin-input";
+                for (int pass = 0; pass < 2; pass++) {
+                    QMetaObject::invokeMethod(win, "applyTheme", Q_ARG(QVariant, QVariant(QString(pass == 0 ? "claro" : "escuro"))));
+                    QFile::remove(inFile);
+                    be.send(pass == 0 ? "pede caminho" : "pede caminho de novo");
+                    check(waitFor([&] { QQuickItem *f = c.item("inputField"); return f && f->isVisible(); }, 10000), "entrada: dialogo aberto (nao mascarado)");
+                    QQuickItem *f = c.item("inputField");
+                    check(f && f->property("echoMode").toInt() == 0, "entrada: campo aberto (Normal)");
+                    check(f && f->property("text").toString() == "/home/ana/Downloads/Tool_16.xip", "entrada: campo pre-preenchido com a melhor dica");
+                    QQuickItem *t = c.item("inputTitle");
+                    check(t && t->property("text").toString() == "O comando espera uma resposta", "entrada: titulo da pergunta comum");
+                    QQuickItem *cx = c.item("inputContext");
+                    check(cx && cx->property("text").toString().contains("enter the path to the downloaded Tool.xip.\n\nPath to Tool.xip:"), "entrada: contexto de varias linhas");
+                    QQuickItem *h1 = c.item("inputHint1"), *h2 = c.item("inputHint2");
+                    check(h1 && h1->isVisible() && h2 && h2->isVisible(), "entrada: sugestoes como botoes");
+                    QTest::qWait(300);
+                    c.grab(pass == 0 ? "47-entrada-claro.png" : "47-entrada-escuro.png");
+                    if (pass == 0) {
+                        if (h1) c.click(h1);
+                        check(waitFor([&] { return f->property("text").toString() == "/home/ana/Desktop/Tool.xip"; }, 3000), "entrada: clicar na sugestao preenche o campo");
+                        f->setProperty("text", f->property("text").toString() + "-editado");
+                        if (QQuickItem *sb = c.item("inputSend")) c.click(sb);
+                        check(waitFor([&] { QFile q(inFile); return q.open(QIODevice::ReadOnly) && q.readAll() == "/home/ana/Desktop/Tool.xip-editado"; }, 10000), "entrada: a resposta editada chegou ao motor");
+                    } else {
+                        if (QQuickItem *cb = c.item("inputCancel")) c.click(cb);
+                        check(waitFor([&] { QFile q(inFile); return q.open(QIODevice::ReadOnly) && q.readAll() == "cancel"; }, 10000), "entrada: Cancelar manda ASKINPUTCANCEL");
+                    }
+                    check(waitFor([&] { return be.ready(); }, 10000), "entrada: o pedido terminou");
+                }
+                QMetaObject::invokeMethod(win, "applyTheme", Q_ARG(QVariant, QVariant(QStringLiteral("escuro"))));
             }
             be.send("morra agora");      // volta ao estado de antes do bloco (sem agente), como os testes de geracao abaixo esperam
             check(waitFor([&] { return !be.ready() && !be.answering(); }, 30000), "agente encerrado de novo");

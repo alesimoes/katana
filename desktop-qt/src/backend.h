@@ -294,8 +294,8 @@ public:
     QStringList queue() const { return m_queue; }
     bool queuePaused() const { return m_paused; }
     Q_INVOKABLE void sendPassword(const QString &pw);  // resposta ao pedido de senha do sudo (vazia = cancelar)
-    Q_INVOKABLE void sendSecret(int id, const QString &text);  // segredo pedido por um comando (\x01SECRET): vai direto ao motor, sem log nem historico
-    Q_INVOKABLE void cancelSecret(int id);
+    Q_INVOKABLE void answerInput(int id, const QString &text);  // resposta a uma pergunta de um comando (\x01ASKINPUT): vai direto ao motor, sem log nem historico
+    Q_INVOKABLE void cancelInput(int id);
     Q_INVOKABLE bool newChat();
     Q_INVOKABLE bool openSession(const QString &id);
     Q_INVOKABLE bool deleteSession(const QString &id);
@@ -342,7 +342,9 @@ signals:
     void textsChanged();
     void sessionsChanged();
     void passwordRequested(bool retry);
-    void secretRequested(int id, const QString &label);  // um comando pediu senha, PIN ou codigo (marcador SECRET <id> <rotulo>)
+    // um comando parou numa pergunta que o usuario responde (marcador ASKINPUT): masked = segredo (senha, PIN, codigo);
+    // label = a pergunta do terminal, question = a pergunta do modelo, context = as linhas anteriores, hints = sugestoes (a primeira e a melhor)
+    void inputRequested(int id, bool masked, const QString &label, const QString &question, const QString &context, const QStringList &hints);
     void queueChanged();
     void workspaceChanged();
     void askRequested(const QString &kind, const QString &what, const QString &detail);

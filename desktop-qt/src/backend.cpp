@@ -1523,20 +1523,20 @@ void Backend::sendPassword(const QString &pw)
         m_proc->write(QByteArray("\x01PASS ") + pw.toUtf8() + "\n");  // direto, sem log nem historico
 }
 
-void Backend::sendSecret(int id, const QString &text)
+void Backend::answerInput(int id, const QString &text)
 {
     if (!m_proc)
         return;
     QByteArray t = text.toUtf8();
     t.replace('\n', "").replace('\r', "");   // uma linha so; o texto nao vai para log, historico nem sessao
-    m_proc->write("\x01SECRET " + QByteArray::number(id) + "\t" + t + "\n");
+    m_proc->write("\x01" "ASKINPUT " + QByteArray::number(id) + "\t" + t + "\n");
     t.fill('\0');
 }
 
-void Backend::cancelSecret(int id)
+void Backend::cancelInput(int id)
 {
     if (m_proc)
-        m_proc->write("\x01SECRETCANCEL " + QByteArray::number(id) + "\n");
+        m_proc->write("\x01" "ASKINPUTCANCEL " + QByteArray::number(id) + "\n");
 }
 
 void Backend::writeLine(const QString &line)
@@ -2103,10 +2103,21 @@ void Backend::handleMarker(const QByteArray &line)
         m_msgs.append("notice", "A placa de vídeo liberou memória: recarregando o modelo para ficar mais rápido. A conversa continua.");
     } else if (name == "NEEDPASS") {  // o motor precisa da senha do sudo
         emit passwordRequested(args.trimmed() == "retry");
-    } else if (name == "SECRET") {  // SECRET <id> <rotulo>: um comando do Bash pede senha, PIN ou codigo; o modelo nao ve o texto
-        const QString a = args.trimmed();
-        const int sp = a.indexOf(' ');
-        emit secretRequested((sp < 0 ? a : a.left(sp)).toInt(), sp < 0 ? QString() : a.mid(sp + 1));
+    } else if (name == "ASKINPUT") {  // ASKINPUT <id> <masked> <pergunta do terminal>\t<pergunta do modelo>\t<contexto>\t<dicas>
+        const QStringList f = args.split('\t');
+        const QString head = f.value(0);
+        const int s1 = head.indexOf(' '), s2 = s1 < 0 ? -1 : head.indexOf(' ', s1 + 1);
+        const int id = (s1 < 0 ? head : head.left(s1)).trimmed().toInt();
+        const bool masked = s1 >= 0 && head.mid(s1 + 1, s2 < 0 ? -1 : s2 - s1 - 1).trimmed() == "1";
+        const QString label = s2 < 0 ? QString() : head.mid(s2 + 1).trimmed();
+        QString ctx;                                     // contexto: \n e \\ escapados pelo motor
+        const QString raw = f.value(2);
+        for (int i = 0; i < raw.size(); i++) {
+            if (raw[i] == '\\' && i + 1 < raw.size()) { ctx += raw[i + 1] == 'n' ? QChar('\n') : raw[i + 1]; i++; }
+            else ctx += raw[i];
+        }
+        QStringList hints = masked ? QStringList() : f.value(3).split(QChar(0x1f), Qt::SkipEmptyParts);
+        emit inputRequested(id, masked, label, f.value(1).trimmed(), ctx, hints);
     } else if (name == "ASK") {  // ASK <tipo>\t<o que>\t<detalhe>: pedido de permissao (confiar na pasta, gravar fora dela, acao)
         const QStringList a = args.split('\t');
         emit askRequested(a.value(0), a.value(1), a.value(2));

@@ -191,6 +191,7 @@ static int ct_dispatch(const char *name, const char *js, const char *end, char *
         char *fp = ct_str(js, end, "file_path"), *cm = strcmp(name, "Bash") == 0 ? ct_str(js, end, "command") : NULL;
         facts_note(name, fp, cm, out);
         free(fp); free(cm);
+        ctb_bg_note(out, cap);                                /* tarefa em segundo plano parada numa pergunta (tools/bash.c) */
     }
     return 1;
 }
