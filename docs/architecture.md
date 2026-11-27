@@ -28,7 +28,7 @@ Components: GGUF models (working), Expert cache (working), KV + prefix (working)
 
 Code: `src/engine/, src/vision/`
 
-Draft by copy is built and switched off. Image input (vision) exists as a test command and is not part of this audit.
+Draft by copy is built and switched off. Also in this layer, new and only compiled and checked on synthetic data: a sampler (min-p, typical-p, Mirostat, DRY, penalties, logit bias, seed), a prefix cache that now covers the Vulkan path of the 35B model, AVX-512 VNNI kernels and a prefetch helper thread for cold experts, and a faster SentencePiece tokenizer. Image input (vision) exists as a test command and is not part of this audit.
 
 ### L2. Specialization
 
@@ -58,7 +58,7 @@ Components: Interpret (partial), Classify (partial), Route (partial), Retrieve (
 
 Code: `src/uioe/`
 
-Built and checked by hand; whether it improves the real model's answers is not measured.
+A web fetch connector reads URLs the user types before the model runs; web search stays off unless enabled. Built and checked by hand; whether it improves the real model's answers is not measured.
 
 ### L5. Code intelligence
 
@@ -115,7 +115,7 @@ The desktop runs on Linux only. The web app and the server were checked against 
 - **Mixture of experts (MoE)**: A model that uses only a few of its many experts for each token.
 - **Expert cache**: Hot experts live in GPU memory; cold ones run on the CPU.
 - **KV cache**: The model's memory of the conversation so far; it can be saved to disk.
-- **Prefix cache**: The saved state of the system prompt, reused by the next session.
+- **Prefix cache**: The saved state of the conversation prefix, reused by the next turn or session.
 - **UIOE**: The layer before the model: interpret, classify, route, retrieve, build context.
 - **Code index**: A per-folder index that Find and Symbols query.
 - **Codegen**: Code generated from a short spec.
@@ -127,6 +127,6 @@ The desktop runs on Linux only. The web app and the server were checked against 
 - Nothing here was measured again. Numbers elsewhere on the site come from the repository's documents, taken on one machine (RTX 3050 Laptop 4 GB, Linux).
 - The engine was not rebuilt and the tests were not run for this page. Status comes from the code present and the checks the documents record.
 - Whether the UIOE, the tool set or the index improves the real model's answers is unknown; no measurement with Qwen3.6 is recorded.
-- The terminal, the web source router and the mid-task message are new today: they compile and have had narrow checks, nothing more.
+- The terminal, the web source router and the mid-task message are new today: they compile and have had narrow checks, nothing more. The same holds for the sampler, the Vulkan prefix cache, the cold-expert kernels and the web fetch connector; none was measured on the model.
 - Windows was not built or tested after the recent work. The Specialization and Codegen layers were judged from code and notes only.
 - Some older notes still carry stale status lines (for example the code-index design note and the embedding notes).
