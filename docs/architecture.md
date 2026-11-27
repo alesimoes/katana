@@ -61,7 +61,7 @@ Reached through the `Render` tool or the desktop image mode. Cascade: view PNG, 
 
 ### L6. Codegen
 
-The model writes a code spec (`.kcode`, text or JSON), the engine generates the code. The sources are now `#include`d by `src/katana.c` (warnings silenced), but nothing in the agent calls them.
+Unified Code Generation Engine (codegen): a short code spec (`.kcode`, text or JSON) becomes code in several languages through the typed AST (UIR-H) and the CFG in SSA form (UIR-G), with no text templates; Python, JS/TS, C and Go backends are built. The model writes the spec, the engine generates the code. The sources are now `#include`d by `src/katana.c` (warnings silenced), but nothing in the agent calls them.
 
 | Component | What it does and how it connects | Where | Status | Note |
 |---|---|---|---|---|
@@ -158,12 +158,20 @@ One compilation unit (`src/katana.c`), GGUF in, tokens out, no external service.
 - **Code request, today.** The model reads with `Find` and `Symbols`, changes code with `Edit` by symbol, validated before the write.
 - **Code request, planned.** The model writes a spec; codegen parses it to UIR, checks it, builds the AST, renders the language, validates it; the result goes in through `Edit` by symbol. The codegen half does not exist in the agent yet.
 
-## Terms
+## Glossary
 
-- **UIOE**: pre-model layer: interpret, classify, route, retrieve, orchestrate, build one context block.
-- **context block**: the `[katana: context for this request ...]` text appended to the user turn.
-- **facade**: the same engine answering `Find`/`Symbols` for both the tool and the UIOE.
-- **UIR-H / UIR-G**: codegen's typed AST and its CFG in SSA form.
+- **UIOE**: *Unified Intelligence Orchestration Engine*: the layer that runs before the model (`src/uioe/`, `docs/uioe.md`), in C with no model call, to understand a request and gather evidence. Modes: `pack` (default), `full`, `off`.
+- **Interpret**: reads the request: entities (symbols, paths, folders, quoted text, error text, config keys, URLs, dates), what is asked, and the risk.
+- **Classify**: decides the domain (code, files, data, research, memory, system, chat), the kind of question (locate, usage, impact, how-to, overview, error, flow) and how hard it is.
+- **Route**: chooses which sources can answer (code index, files, memory, web registry) and which cannot, and says why one was left out.
+- **Retrieve**: runs the queries through the engine behind `Find` and `Symbols`, re-reads the files to verify what it found and builds the evidence graph.
+- **Orchestrate**: sequences the steps and respects the deadline (`KATANA_UIOE_MS`, `KATANA_UIOE_TOTAL_MS`).
+- **evidence graph (`UG_*`)**: the graph retrieval builds: nodes are files, line ranges, symbols, keys, documentation lines and facts; edges are calls, definitions, uses, imports, sends, handles, links, contains, mentions. `UG_*` is the prefix of its limits and of the decision below.
+- **decision (`UG_NONE`, `UG_LIMITS`, `UG_PACKET`)**: what the UIOE does with the result: `UG_NONE` injects nothing (greeting, vague request, low confidence, deadline overrun); `UG_LIMITS` injects only "not found / limits" plus the next step; `UG_PACKET` injects the full block.
+- **context block (packet)**: the `[katana: context for this request ...]` text appended to the user message, at most 1500 tokens; the system prompt does not change, so the prefix cache stays valid.
+- **facades**: `Find` and `Symbols` answered by the same UIOE state, so what the block already showed is not repeated by a tool call.
+- **Unified Code Generation Engine (codegen)**: turns a short code spec (`.kcode`, text or JSON) into code in several languages through a typed AST (UIR-H) and a control-flow graph in SSA form (UIR-G), with no text templates. Python, JS/TS, C and Go backends are built; not yet connected to the agent.
+- **UIR-H / UIR-G**: codegen's typed AST (H) and its CFG in SSA form (G).
 - **`.kspec`**: LoRA-style specialization adapter; `.kcode` is a code spec, a different file.
 - **brief**: the one-line text prompt the `Render` tool sends to the image engine.
 - **expert cache**: MoE experts in VRAM slots by heat; cold experts run on the CPU from the mapped file.
