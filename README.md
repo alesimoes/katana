@@ -45,8 +45,19 @@ will differ with your hardware. What was measured, what is an estimate and what 
 
 ## Quick start
 
-Linux (gcc, AVX2). Windows builds with the Visual Studio 2022 Build Tools (`build.bat`); the Linux path is the
-one used and tested day to day.
+There is no release yet: you clone the project, build it and run it from the folder, with nothing installed on the system.
+You need Linux x86_64 with `gcc` and `curl`, at least 24 GB of RAM and about 25 GB of free disk for the main model. A GPU is
+optional (Vulkan is loaded from the driver when present; otherwise it runs on the CPU).
+
+```
+git clone https://github.com/alesimoes/katana.git && cd katana
+sh build.sh              # produces ./katana (gcc, about 85 s)
+./katana setup           # checks the machine and downloads the model and the extras (vision, embedder; image is opt-in)
+./katana                 # agent console in the current folder
+```
+
+Windows builds with the Visual Studio 2022 Build Tools (`build.bat`), but that path was never compiled or tested here; the Linux
+path is the one used day to day. More commands:
 
 ```
 ./build.sh                                   # produces ./katana

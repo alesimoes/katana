@@ -42,11 +42,7 @@ static const CatFile cf_flux[]   = {
     { "flux-2-klein-4b-Q4_K_M.gguf", "flux2klein/gguf/flux-2-klein-4b-Q4_K_M.gguf", "0b25d143c8469b342bc5af3bce92b783bf6b0636d285f7b2f75e38af63af9a15", 2604311104LL },
     { "flux2-vae.gguf", "flux2klein/gguf/flux2-vae.gguf", "e43c1074d0a80562e7639d6c82849f3af7693f55785add404f23ab1bda511f3f", 336206784LL },
     { "qwen3-4b-text.gguf", "flux2klein/gguf/qwen3-4b-text.gguf", "3a390a0869d9507a1c80a2cbf1dbe5673b6ff8630030d86fd502cdb605e7b270", 6234412640LL } };
-/* o motor procura o Stable Diffusion 1.5 em render/ (src/tools/render.c, src/render/sdspec.c, sdtest.c) */
-static const CatFile cf_sd15[]   = {
-    { "sd15-realistic-vision.gguf", "render/sd15-realistic-vision.gguf", "63e159f5a08f0313fb2ad6513ba6dea127a9f294cd0573d272f995bd8e6920d4", 2302699168LL },
-    { "sd15-controlnet-canny.gguf", "render/sd15-controlnet-canny.gguf", "75947232b31de98ab4924cf7bddef817030eea2b6a2cd0e87eaa4319c13e665a", 722999744LL },
-    { "sd15-realistic-vision-lcm.gguf", "render/sd15-realistic-vision-lcm.gguf", "ec3aefc04ae02314edb6b88ae039965433beb6b9dbf440a904a5548446dbf066", 2302699168LL } };
+/* Stable Diffusion 1.5 (render/sd15-*.gguf) fica fora do catalogo ate a licenca (OpenRAIL) ser revista: ver tools/release/LICENSES.md */
 
 #define CF(a) a, (int)(sizeof a / sizeof a[0])
 static const CatItem g_cat[] = {
@@ -60,8 +56,6 @@ static const CatItem g_cat[] = {
       "busca por significado nos arquivos, na memoria e nas sessoes" },
     { "flux2-klein", "FLUX.2 klein 4B (Q4_K_M)", "image", KATANA_HF_ORG "/katana-flux2-klein", KATANA_REV_FLUX, CF(cf_flux), 0, 0,
       "gera imagens de alta qualidade; precisa de uma placa de video" },
-    { "sd15", "Stable Diffusion 1.5 (Realistic Vision + ControlNet)", "image", KATANA_HF_ORG "/katana-sd15", KATANA_HF_REV, CF(cf_sd15), 0, 0,
-      "gera imagens com poucos recursos; inclui ControlNet canny e o modo rapido LCM" },
 };
 #define N_CAT ((int)(sizeof g_cat / sizeof g_cat[0]))
 
