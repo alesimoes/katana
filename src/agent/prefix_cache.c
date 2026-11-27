@@ -278,10 +278,21 @@ static void pfx_tokens(Model *m, const char *sys, Ids *p, int *stable) {
    total e done0 contam o trabalho todo desta preparacao (parte estavel + resto) */
 static void pfx_run(Model *m, const int *ids, int from, int to, int total, int done0) {
     const int step = 256;
+    const int ui = getenv("KATANA_UI") != NULL;
+    const double t0 = now_sec();
+    /* no console nao ha barra: sem estas linhas a primeira execucao numa pasta parece travada (o prefill leva dezenas de segundos) */
+    if (!ui && total >= 512 && done0 == 0)
+        fprintf(stderr, "[agent warm: computing the system prompt, %d tokens; only the first time for this folder, the next start loads it from disk]\n", total);
     for (int i = from; i < to; i += step) {
         const int nb = to - i < step ? to - i : step;
-        if (getenv("KATANA_UI")) { printf("\x01" "PREP %d %d\n", total, done0 + (i - from)); fflush(stdout); }
+        if (ui) { printf("\x01" "PREP %d %d\n", total, done0 + (i - from)); fflush(stdout); }
         forward_seq(m, ids + i, nb, i, 0);
+        const int done = done0 + (i - from) + nb;
+        if (!ui && total >= 512 && done < total && ((i - from) / step) % 4 == 3) {
+            const double el = now_sec() - t0, rate = el > 0 ? (double)(done - done0) / el : 0;
+            if (rate > 1) fprintf(stderr, "[agent warm: %d of %d tokens, about %.0f s left]\n", done, total, (double)(total - done) / rate);
+            else fprintf(stderr, "[agent warm: %d of %d tokens]\n", done, total);
+        }
     }
 }
 
