@@ -284,6 +284,7 @@ static struct {
     volatile atom_t st_jobs, st_main, st_work, st_sleep;   /* estatistica: trabalhos, blocos da principal e das outras, sonos */
 #ifndef _WIN32
     pthread_mutex_t mu; pthread_cond_t cv;
+    pthread_mutex_t use;                /* um dono por vez: o carregamento do embedder em outra thread tambem chama pool_for */
 #endif
 } pool;
 
@@ -335,6 +336,9 @@ static void *pool_worker(void *arg) {
 static void pool_for(PoolFn fn, void *ctx, int total, int chunk) {
     if (chunk < 1) chunk = 1;
     if (pool.n <= 1 || total <= chunk) { fn(ctx, 0, total); return; }
+#ifndef _WIN32
+    pthread_mutex_lock(&pool.use);
+#endif
     pool.fn = fn; pool.ctx = ctx; pool.total = total; pool.chunk = chunk;
     ATOM_SET(&pool.next, 0);
     ATOM_SET(&pool.open, 1);
@@ -348,6 +352,9 @@ static void pool_for(PoolFn fn, void *ctx, int total, int chunk) {
     ATOM_XADD(&pool.st_main, pool_run());
     ATOM_SET(&pool.open, 0);
     while (pool.active) CPU_RELAX();
+#ifndef _WIN32
+    pthread_mutex_unlock(&pool.use);
+#endif
 }
 
 #ifdef _WIN32
@@ -399,7 +406,7 @@ static void pool_init(void) {
     if (n < 1) { n = (int)sysconf(_SC_NPROCESSORS_ONLN) / 2; if (n < 1) n = 1; }
     if (n > 64) n = 64;
     (void)pin;
-    pthread_mutex_init(&pool.mu, NULL); pthread_cond_init(&pool.cv, NULL);
+    pthread_mutex_init(&pool.mu, NULL); pthread_mutex_init(&pool.use, NULL); pthread_cond_init(&pool.cv, NULL);
     pool.n = n;
     for (int k = 1; k < n; k++) {
         pthread_t t;

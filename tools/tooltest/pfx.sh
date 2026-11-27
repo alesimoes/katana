@@ -7,7 +7,7 @@ K=$(cd "$(dirname "$1")" && pwd)/$(basename "$1")
 T=$(mktemp -d) || exit 2
 trap 'rm -rf "$T"' EXIT
 export HOME="$T/home" KATANA_CACHE_DIR="$T/cache" KATANA_CPU=1 KATANA_CTX=16000 KATANA_LOG="$T/log" KATANA_WEB=0 KATANA_MAXTOK=2
-mkdir -p "$HOME" "$T/w"; cd "$T/w" || exit 2
+mkdir -p "$HOME" "$T/w" "$T/cache"; : > "$T/log"; cd "$T/w" || exit 2   # pasta pai com o mesmo conteudo nas duas execucoes: a listagem entra no prompt
 python3 "$D/tools/tinymodel/make_tiny_gguf.py" "$T/a.gguf" --arch qwen35moe --template chatml-xml > /dev/null || exit 2
 # b: o mesmo arquivo com os primeiros 256 pesos dos dados somados de 0.5 (blk.0 ou token_embd; o output_norm nao muda)
 python3 - "$T/a.gguf" "$T/b.gguf" <<'PY'
