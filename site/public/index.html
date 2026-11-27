@@ -95,6 +95,7 @@
     background: linear-gradient(135deg, var(--g1), var(--g2) 60%, var(--g3)); display: flex; align-items: flex-end; justify-content: center; padding: 28px 28px 0; }
   .bigc .art img { width: 100%; border-radius: 10px 10px 0 0; box-shadow: 0 10px 40px var(--shadow); object-fit: cover; object-position: top; aspect-ratio: 1000 / 600; }
   .bigc .pill { position: absolute; top: 16px; left: 50%; transform: translateX(-50%); background: var(--card); border: 1px solid var(--bd); border-radius: 999px; padding: 6px 16px; font: 600 .85rem var(--mono); white-space: nowrap; box-shadow: 0 6px 20px var(--shadow); }
+  .bigc .art .flowsvg { width: 100%; height: 100%; padding: 36px 8px 8px; }
   .bigc h3 { margin: 18px 0 6px; font: 650 1.15rem var(--sans); }
   .bigc p { margin: 0 0 8px; color: var(--mut); }
   .bigc ul { margin: 6px 0 0; padding-left: 1.2em; color: var(--mut); font-size: .94rem; }
@@ -261,7 +262,7 @@
       <h3>Prefix cache <span class="badge new">new</span></h3><p>The state of the conversation prefix, including the Vulkan path of the 35B model, is kept and reused, so a new turn does not re-read the whole prompt. Each turn logs how much was new and how much was reused.</p></div>
     <div class="f"><div class="ic"><svg width="22" height="22" viewBox="0 0 24 24" aria-hidden="true"><path d="M4 7h9m4 0h3M4 17h3m4 0h9M13 4v6M7 14v6" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/></svg></div>
       <h3>Sampling controls <span class="badge new">new</span></h3><p>min-p, typical-p, Mirostat, DRY, repeat, presence and frequency penalties, logit bias and a seed, per request or by environment variable. Defaults are neutral.</p></div>
-    <div class="f"><div class="ic"><svg width="22" height="22" viewBox="0 0 24 24" aria-hidden="true"><path d="M7 7h10v10H7zM10 3v4m4-4v4m-4 10v4m4-4v4M3 10h4m-4 4h4m10-4h4m-4 4h4" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/></svg></div>
+    <div class="f"><div class="ic"><svg width="22" height="22" viewBox="0 0 24 24" aria-hidden="true"><path d="M13 2 4 14h7l-1 8 9-12h-7z" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/></svg></div>
       <h3>Faster cold experts <span class="badge new">new</span></h3><p>Four-row AVX-512 VNNI kernels for the experts that run on the CPU, software prefetch, and a helper thread that guesses the next layer's experts while the GPU works.</p></div>
   </div>
   <p class="note" style="text-align:center;margin-top:18px">Items marked <span class="badge new">new</span> compile and have had narrow synthetic checks, but have not been measured on the model or against real tasks.</p>
@@ -304,15 +305,32 @@
       <p class="note">No remote service. A small local embedding model, when installed, only reorders candidates. New, not yet in the model's training, and not measured.</p>
     </div>
     <div class="bigc">
-      <div class="art"><span class="pill">IDE view</span>
-        <img src="img/find-symbols-ide.png" width="1000" height="695" alt="katana desktop with the IDE view: a file open beside the conversation and the tool cards" loading="lazy"></div>
+      <div class="art"><span class="pill">Web reading</span>
+        <svg class="flowsvg" viewBox="0 0 520 300" role="img" aria-label="Diagram: a question goes to a registry of sources, two to four sources are asked in parallel, each page comes back with a state (complete, partial, empty shell, blocked), and when a page cannot be read the result names the next place to look">
+          <defs><marker id="ar" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="7" markerHeight="7" orient="auto"><path d="M0 0 10 5 0 10z" fill="#a8a4b0"/></marker></defs>
+          <g font-family="ui-monospace, Menlo, Consolas, monospace" font-size="13" fill="#ece9f0">
+            <rect x="10" y="118" width="96" height="44" rx="10" fill="#2b2831" stroke="#c48af5"/><text x="58" y="145" text-anchor="middle">question</text>
+            <rect x="140" y="118" width="116" height="44" rx="10" fill="#2b2831" stroke="#c48af5"/><text x="198" y="137" text-anchor="middle">source</text><text x="198" y="153" text-anchor="middle">registry</text>
+            <rect x="300" y="26" width="110" height="38" rx="9" fill="#1a181e" stroke="#3a3641"/><text x="355" y="50" text-anchor="middle">code hosting</text>
+            <rect x="300" y="86" width="110" height="38" rx="9" fill="#1a181e" stroke="#3a3641"/><text x="355" y="110" text-anchor="middle">technical Q&amp;A</text>
+            <rect x="300" y="146" width="110" height="38" rx="9" fill="#1a181e" stroke="#3a3641"/><text x="355" y="170" text-anchor="middle">papers, news</text>
+            <rect x="300" y="206" width="110" height="38" rx="9" fill="#1a181e" stroke="#3a3641"/><text x="355" y="230" text-anchor="middle">web search</text>
+            <rect x="430" y="86" width="84" height="98" rx="10" fill="#2b2831" stroke="#6fd1c2"/><text x="472" y="112" text-anchor="middle" font-size="12">page state</text>
+            <text x="472" y="132" text-anchor="middle" font-size="11" fill="#a8a4b0">complete</text><text x="472" y="148" text-anchor="middle" font-size="11" fill="#a8a4b0">partial</text><text x="472" y="164" text-anchor="middle" font-size="11" fill="#a8a4b0">empty shell</text><text x="472" y="180" text-anchor="middle" font-size="11" fill="#a8a4b0">blocked</text>
+            <rect x="270" y="262" width="244" height="30" rx="9" fill="none" stroke="#a8a4b0" stroke-dasharray="4 4"/><text x="392" y="282" text-anchor="middle" font-size="11" fill="#a8a4b0">unreadable: names the next place</text>
+          </g>
+          <g stroke="#a8a4b0" stroke-width="1.6" fill="none" marker-end="url(#ar)">
+            <path d="M106 140H138"/><path d="M256 140 298 45"/><path d="M256 140 298 105"/><path d="M256 140 298 165"/><path d="M256 140 298 225" stroke-dasharray="4 4"/>
+            <path d="M410 45 428 100"/><path d="M410 105H428"/><path d="M410 165 428 150"/><path d="M472 184V260" stroke-dasharray="4 4"/>
+          </g>
+        </svg></div>
       <h3>Pages that tell their state</h3>
       <ul>
         <li><strong>Search that routes.</strong> A registry of sources (code hosting, technical Q&amp;A, a model hub, an encyclopedia, news feeds, papers), extensible with a plain text file. Each question goes to two to four of them in parallel; a general search engine is the last step.</li>
         <li><strong>States, not guesses.</strong> A page that only builds itself in the browser is read again with a headless browser, then through the machine-readable twins some sites publish.</li>
         <li><strong>No empty answers.</strong> When a page cannot be read, the result names the next place to look.</li>
       </ul>
-      <p class="note">New. It compiles and has had narrow checks; not measured. The picture shows the desktop's IDE view, not the web tools.</p>
+      <p class="note">New. It compiles and has had narrow checks; not measured. The diagram shows the flow; it is not a screenshot.</p>
     </div>
   </div>
 </section>
@@ -333,8 +351,17 @@
     <article class="m">
       <div class="name"><svg width="20" height="20" aria-hidden="true"><use href="#i-cube"/></svg>Gemma 4 26B-A4B</div>
       <div class="stats"><span>Q4_K_M</span><span>~16 GB on disk</span><span class="gen">23.7 tok/s</span></div>
-      <p>Also works, and can be picked in the desktop's model selector.</p>
+      <p>Also works, and can be picked in the desktop's model selector. Not tested in the current phase.</p>
     </article>
+  </div>
+  <div class="panel" style="margin-top:16px">
+    <h3>Extras <code>katana setup</code> can download</h3>
+    <p>Every file is pinned by revision and checked by sha256. Vision and the embedder are marked by default; image models are opt-in because of their size.</p>
+    <ul style="margin:6px 0 0;padding-left:1.2em;font-size:.92rem">
+      <li><strong>Vision</strong> (~0.9 GB): the Qwen3.6 vision projector, so the model can read an attached picture.</li>
+      <li><strong>Embedder</strong> (~0.3 GB): EmbeddingGemma 2, for <code>katana embed</code> and optional search reordering.</li>
+      <li><strong>Image</strong> (~8.5 GB): FLUX.2 klein 4B (transformer, text encoder and VAE), converted to GGUF by katana. Hosted on Hugging Face under <code>alesimoes</code>; format conversion, no retraining.</li>
+    </ul>
   </div>
   <p class="note">Alternating runs on the same machine, because the machine drifts over time; taken before the latest changes to the agent and not repeated since. Your numbers will differ with your hardware. <code>katana convert</code> turns a Hugging Face checkpoint into GGUF for this architecture; it has only been checked on tiny test checkpoints.</p>
   <div class="side">
@@ -368,23 +395,24 @@
   <div class="sh">
     <div class="kicker">Run it</div>
     <h2 id="h-run">From source, in a few commands</h2>
-    <p>Linux only for now: the Windows build was never compiled or tested.</p>
+    <p>There is no release yet: clone it, build it and run it from the folder, with nothing installed on the system. Linux x86_64 with <code>gcc</code> and <code>curl</code>; Windows was never compiled or tested.</p>
   </div>
   <div class="runs">
     <div class="term" aria-label="Engine and agent commands">
       <div class="bar">engine and agent<button class="copy" type="button" hidden>copy</button></div>
-<pre><span class="p">$ </span>sh build.sh                <span class="c"># one C file, gcc</span>
-<span class="p">$ </span>./katana catalog           <span class="c"># what fits here</span>
-<span class="p">$ </span>./katana pull qwen3.6-35b  <span class="c"># download, verify</span>
-<span class="p">$ </span>./katana                   <span class="c"># chat with tools</span>
-<span class="p">$ </span>./katana --model qwen      <span class="c"># or name a model</span></pre>
+<pre><span class="p">$ </span>git clone https://github.com/alesimoes/katana.git
+<span class="p">$ </span>cd katana &amp;&amp; sh build.sh      <span class="c"># one C file, gcc</span>
+<span class="p">$ </span>./katana setup               <span class="c"># check, download</span>
+<span class="p">$ </span>./katana                     <span class="c"># chat with tools</span>
+<span class="p">$ </span>./katana catalog             <span class="c"># what fits here</span></pre>
     </div>
     <div class="term" aria-label="Desktop app commands">
       <div class="bar">desktop app<button class="copy" type="button" hidden>copy</button></div>
-<pre><span class="p">$ </span>sh build.sh                          <span class="c"># 1. the engine -> ./katana</span>
-<span class="p">$ </span>sh desktop-qt/build.sh               <span class="c"># 2. the app</span>
-<span class="p">$ </span>mkdir -p models &amp;&amp; cp model.gguf models/  <span class="c"># 3. a GGUF model</span>
-<span class="p">$ </span>./desktop-qt/build/katana-desktop-qt   <span class="c"># 4. from the repository root</span></pre>
+<pre><span class="p">$ </span>sh build.sh                  <span class="c"># 1. the engine</span>
+<span class="p">$ </span>sh desktop-qt/build.sh       <span class="c"># 2. the app (Qt 6.5+)</span>
+<span class="p">$ </span>./katana setup               <span class="c"># 3. a model</span>
+<span class="c"># 4. run it from the repository root:</span>
+<span class="p">$ </span>./desktop-qt/build/katana-desktop-qt</pre>
     </div>
   </div>
   <div class="callout"><strong>Heads up:</strong> by default the agent acts on your machine without asking. Set <code>KATANA_CONFIRM=1</code> to have it ask first.</div>
@@ -404,7 +432,7 @@
   </div>
   <div class="gallery">
     <figure>
-      <img src="img/find-symbols-dark.png" width="1000" height="695" alt="Tool cards for Symbols in the dark theme, with callers, confidence levels and a not-found result" loading="lazy">
+      <img src="img/find-symbols-light.png" width="1000" height="695" alt="Tool cards for Symbols in the light theme, with callers, confidence levels and a not-found result" loading="lazy">
       <figcaption>Each tool call is a card: what was asked, what came back, how long it took.</figcaption>
     </figure>
     <div class="stack">

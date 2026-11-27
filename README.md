@@ -484,7 +484,7 @@ and to be a codebase you can read end to end. It is developed on one Linux machi
 
 ## Author
 
-Written by Alexandre Simoes ([@alesimoes](https://github.com/alesimoes)). Site: [katana-llm.web.app](https://katana-llm.web.app).
+Written by Alexandre Simões ([@alesimoes](https://github.com/alesimoes)). Site: [katana-llm.web.app](https://katana-llm.web.app).
 
 ## License
 
