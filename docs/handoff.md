@@ -41,8 +41,12 @@ further down are measurements from the dates in their titles; do not read them a
 of the model).** `katana toktest <gguf> [--root dir]` (`src/app/toktest.c`) runs hand-derived golden cases for the pre-tokenizer (regexes read from the official
 `tokenizer.json`), special/byte-fallback/NFC/BOS goldens, a round trip over docs, src, README and odd texts (accents, emoji, CJK, tabs, NBSP, 200k-char lines), and cross
 checks. Found and fixed: GLM `ignore_merges` (25 of 313 corpus cases changed), Gemma 4 `<eos>` not special, Gemma 4 quadratic BPE (now `bpe_sym` raw mode). Round trip: 0
-failures on all four. Not done: run the official tokenizer on GLM and Gemma 4 ids (use `tools/tokref` with the three `tokenizer.json` files), SentencePiece (`llama`) path.
+failures on all four. Not done: run the official tokenizer on GLM and Gemma 4 ids (use `tools/tokref` with the three `tokenizer.json` files).
 Details in `knowledge.md` section 9.
+
+**2026-11-27, SentencePiece (`llama`) encoder (compiled; `katana toktest --spm-synth` run, vocabulary synthetic, no model, no inference).** `spm_encode` rewritten from O(n^2) to
+O(n log n) (symbol linked list + pair heap, ties to the leftmost); the old version stays as `spm_encode_ref` for the test. Same ids on ~7,500 random texts and on
+20k/50k-character lines. Open: confirm with a real `llama` GGUF (and official ids) when one is in `models/`.
 
 **2026-11-25, declared flows (`docs/flows.md`).** The engine now holds the state of the job per conversation: 13 playbooks as state
 machines in a table (`src/agent/flow.c`), a contract for each of the 40 tools, and one `[katana: next <flow> <i>/<n> <state>: ...]` line at the

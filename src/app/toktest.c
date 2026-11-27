@@ -6,6 +6,7 @@
  *    acentos, emoji, CJK, espacos e tabs estranhos, linhas longas), com contagem de tokens e velocidade;
  * 4) conferencias cruzadas: ignore_merges ligado x desligado (glm4/llama-bpe), BPE de heap x versao lenta e x sem corte por
  *    quebra de linha (gemma4): o numero de casos que mudam em relacao ao comportamento anterior.
+ * `katana toktest --spm-synth`: SentencePiece (llama) com vocabulario sintetico, heap x versao quadratica (sem modelo).
  * Sem o primeiro argumento de arquivo de casos; com `katana toktest <gguf> <casos.hex> [--chat]` continua o teste dourado
  * contra a referencia externa (tools/tokref). */
 #include <time.h>
@@ -367,6 +368,134 @@ static int tt_audit(Model *m, const char *root) {
         printf("gemma4, BPE de heap x versao lenta anterior: %ld casos diferem (%ld casos com linhas > 3000 bytes ficaram de fora da conferencia)\n", st.g4_ref_diff, st.g4_ref_skip);
         printf("gemma4, corte por quebras de linha x BPE sem corte (o do tokenizer.json): %ld casos diferem\n", st.g4_cut_diff);
         fail += (int)st.g4_ref_diff;
+    }
+    printf("%s: %d falhas\n", fail ? "REPROVADO" : "APROVADO", fail);
+    return fail ? 1 : 0;
+}
+
+/* ---------- katana toktest --spm-synth: SentencePiece (`llama`) com vocabulario sintetico ----------
+ * Nenhum modelo `llama` esta em models/: o vocabulario e as pontuacoes sao gerados aqui (semente fixa). Compara o spm_encode de heap com a
+ * versao quadratica anterior (spm_encode_ref), ids contra ids, em textos curtos, longos e aleatorios (com empates de pontuacao de
+ * proposito, byte fallback, prefixo de espaco e tokens especiais), confere a ida e volta e mede o tempo em linhas longas. */
+static uint32_t g_ts_rng = 12345u;
+static uint32_t ts_rand(void) { g_ts_rng = g_ts_rng * 1664525u + 1013904223u; return g_ts_rng >> 8; }
+
+static void ts_add(Tokenizer *tk, int *cap, const char *s, int type, float score) {
+    if (tk->n == *cap) {
+        *cap *= 2;
+        tk->tok = realloc(tk->tok, (size_t)*cap * sizeof(char *)); tk->toklen = realloc(tk->toklen, (size_t)*cap * sizeof(int));
+        tk->toktype = realloc(tk->toktype, (size_t)*cap * sizeof(int)); tk->score = realloc(tk->score, (size_t)*cap * sizeof(float));
+        if (!tk->tok || !tk->toklen || !tk->toktype || !tk->score) die("sem memoria");
+    }
+    tk->tok[tk->n] = strdup(s); tk->toklen[tk->n] = (int)strlen(s); tk->toktype[tk->n] = type; tk->score[tk->n] = score; tk->n++;
+}
+
+static void ts_build(Tokenizer *tk) {
+    int cap = 4096;
+    memset(tk, 0, sizeof *tk);
+    tk->tok = xalloc((size_t)cap, sizeof(char *)); tk->toklen = xalloc((size_t)cap, sizeof(int));
+    tk->toktype = xalloc((size_t)cap, sizeof(int)); tk->score = xalloc((size_t)cap, sizeof(float));
+    tk->spm = 1;
+    ts_add(tk, &cap, "<unk>", 2, 0); ts_add(tk, &cap, "<s>", 3, 0); ts_add(tk, &cap, "</s>", 3, 0);
+    for (int b = 0; b < 256; b++) { char t[8]; snprintf(t, sizeof t, "<0x%02X>", b); ts_add(tk, &cap, t, 6, 0); }
+    ts_add(tk, &cap, TT_U2, 1, -1.0f);
+    for (const char *a = "abcdefgh,.\n"; *a; a++) { char t[2] = { *a, 0 }; ts_add(tk, &cap, t, 1, -2.0f); }
+    /* pecas: pedacos de palavras sobre um alfabeto pequeno, pontuacoes inteiras pequenas (muitos empates) */
+    static const char *AL[] = { "a", "b", "c", "d", "e", "a", "b", TT_U2 };
+    for (int i = 0; i < 6000; i++) {
+        char t[32]; int l = 2 + (int)(ts_rand() % 6), k = 0;
+        for (int j = 0; j < l && k < 24; j++) { const char *p = AL[ts_rand() % 8]; const int pl = (int)strlen(p); memcpy(t + k, p, (size_t)pl); k += pl; }
+        t[k] = 0;
+        ts_add(tk, &cap, t, 1, -(float)(ts_rand() % 12));
+    }
+    map_init(&tk->vocab, (uint32_t)tk->n);
+    for (int i = 0; i < tk->n; i++) map_put(&tk->vocab, tk->tok[i], tk->toklen[i], i);
+    tk->special = xalloc(4, sizeof(int)); tk->special[tk->n_special++] = 1; tk->special[tk->n_special++] = 2;
+    for (int j = 0; j < tk->n_special; j++) tk->spec1[(uint8_t)tk->tok[tk->special[j]][0]] = 1;
+}
+
+static void ts_text(char *t, size_t L, int mode) {
+    static const char *AL[] = { "a", "b", "c", "d", "e", " ", " ", "f", "g", "\n", "\xc3\xa9", "\xe4\xbd\xa0", "\xf0\x9f\x98\x80", "z", ",", ".", "  " };
+    size_t k = 0;
+    while (k + 5 < L) {
+        const char *p = mode == 1 ? AL[ts_rand() % 5] : mode == 2 ? "a" : AL[ts_rand() % 17];
+        const size_t pl = strlen(p); memcpy(t + k, p, pl); k += pl;
+    }
+    t[k] = 0;
+}
+
+static int tt_spm_synth(void) {
+    Tokenizer tk; ts_build(&tk);
+    printf("SentencePiece sintetico: vocabulario %d (256 bytes, pecas e pontuacoes aleatorias com empates), semente fixa\n", tk.n);
+    int fail = 0; long cases = 0, rt = 0, rtfail = 0, eqfail = 0, tokens = 0;
+    double tnew = 0, told = 0;
+    const size_t SIZES[] = { 0, 1, 2, 3, 5, 8, 20, 60, 200, 1000, 5000, 20000, 30000 };
+    for (int mode = 0; mode < 3; mode++) {
+        for (size_t si = 0; si < sizeof SIZES / sizeof SIZES[0]; si++) {
+            const int reps = SIZES[si] <= 60 ? 300 : SIZES[si] <= 1000 ? 40 : 2;
+            for (int r = 0; r < reps; r++) {
+                const size_t L = SIZES[si] ? SIZES[si] + (SIZES[si] > 8 ? ts_rand() % (SIZES[si] / 2) : 0) : 0;
+                char *t = xalloc(L + 16, 1);
+                ts_text(t, L, mode);
+                for (int pf = 0; pf < 2; pf++) {
+                    Ids a = {0}, b = {0};
+                    clock_t c0 = clock();
+                    spm_encode(&tk, (const uint8_t *)t, (int)strlen(t), &a, pf);
+                    tnew += (double)(clock() - c0) / CLOCKS_PER_SEC; c0 = clock();
+                    spm_encode_ref(&tk, (const uint8_t *)t, (int)strlen(t), &b, pf);
+                    told += (double)(clock() - c0) / CLOCKS_PER_SEC;
+                    cases++; tokens += a.n;
+                    if (!tt_ids_eq(&a, &b)) { eqfail++; printf("  FALHA heap x quadratica: modo %d, %zu bytes, prefixo %d (%d x %d tokens)\n", mode, strlen(t), pf, a.n, b.n); }
+                    free(a.ids); free(b.ids);
+                }
+                /* ida e volta pelo encode completo (prefixo de espaco no comeco): decode == " " + texto */
+                {
+                    Ids ids = {0}; Buf d = {0};
+                    encode(&tk, t, &ids); tt_decode(&tk, &ids, &d);
+                    const size_t n = strlen(t);
+                    rt++;
+                    if (n && (d.n != n + 1 || d.p[0] != ' ' || memcmp(d.p + 1, t, n) != 0)) { rtfail++; printf("  FALHA ida e volta: modo %d, %zu bytes\n", mode, n); }
+                    free(ids.ids); free(d.p);
+                }
+                free(t);
+            }
+        }
+    }
+    /* tokens especiais no meio do texto: o prefixo de espaco so no inicio e depois de um especial, como antes */
+    {
+        const char *sp = "ab <s>abc d</s> e</s><s>aaa\n<s>";
+        Ids ids = {0}; encode(&tk, sp, &ids);
+        int ns = 0; for (int i = 0; i < ids.n; i++) if (ids.ids[i] == 1 || ids.ids[i] == 2) ns++;
+        printf("especiais no texto: %d reconhecidos (esperado 5)\n", ns);
+        if (ns != 5) fail++;
+        free(ids.ids);
+    }
+    printf("heap x quadratica: %ld casos (ate 45000 bytes, com e sem prefixo), %ld tokens, %ld diferencas; tempo heap %.3f s, quadratica %.3f s\n", cases, tokens, eqfail, tnew, told);
+    printf("ida e volta: %ld casos, %ld falhas\n", rt, rtfail);
+    fail += (int)(eqfail + rtfail);
+    /* linhas longas: o ganho de tempo (a quadratica em 200 mil so roda com KATANA_TOKTEST_SLOW=1: leva minutos) */
+    {
+        const size_t Ls[] = { 20000, 50000, 200000 };
+        for (int mode = 1; mode <= 2; mode++) for (size_t li = 0; li < 3; li++) {
+            const size_t L = Ls[li];
+            char *t = xalloc(L + 16, 1);
+            ts_text(t, L, mode);
+            Ids a = {0}, b = {0};
+            clock_t c0 = clock();
+            spm_encode(&tk, (const uint8_t *)t, (int)strlen(t), &a, 1);
+            const double dn = (double)(clock() - c0) / CLOCKS_PER_SEC;
+            printf("linha de %zu caracteres (%s): heap %.4f s, %d tokens", strlen(t), mode == 1 ? "aleatoria" : "so 'a'", dn, a.n);
+            if (L <= 50000 || getenv("KATANA_TOKTEST_SLOW")) {
+                c0 = clock();
+                spm_encode_ref(&tk, (const uint8_t *)t, (int)strlen(t), &b, 1);
+                const double dq = (double)(clock() - c0) / CLOCKS_PER_SEC;
+                const int eq = tt_ids_eq(&a, &b);
+                printf("; quadratica %.3f s (%.0fx); ids %s", dq, dn > 0 ? dq / dn : 0.0, eq ? "iguais" : "DIFERENTES");
+                if (!eq) fail++;
+            } else printf("; quadratica nao executada");
+            printf("\n");
+            free(t); free(a.ids); free(b.ids);
+        }
     }
     printf("%s: %d falhas\n", fail ? "REPROVADO" : "APROVADO", fail);
     return fail ? 1 : 0;
