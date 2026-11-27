@@ -6,13 +6,13 @@ import QtQuick.Controls
 Rectangle {
     id: tp
     objectName: "terminalPanel"
-    color: "#1b1b21"
+    color: "#222733"      // azul-ardosia escuro, estilo editor de codigo: borda e texto aparecem
     property bool stick: true
     signal closeRequested()
 
     function focusTerm() { ed.forceActiveFocus(); }
 
-    Rectangle { anchors.top: parent.top; width: parent.width; height: 1; color: Theme.bd }
+    Rectangle { anchors.top: parent.top; width: parent.width; height: 1; color: "#4a5266" }
 
     Item {
         id: head
@@ -20,7 +20,8 @@ Rectangle {
         anchors.left: parent.left
         anchors.right: parent.right
         height: 32
-        Text { font.family: Theme.sans; x: 14; anchors.verticalCenter: parent.verticalCenter; text: "Terminal"; color: "#a1a1aa"; font.pixelSize: 12; font.bold: true }
+        Rectangle { anchors.fill: parent; color: "#2a3040" }      // faixa do titulo um pouco mais clara
+        Text { font.family: Theme.sans; x: 14; anchors.verticalCenter: parent.verticalCenter; text: "Terminal"; color: "#aab2c5"; font.pixelSize: 12; font.bold: true }
         Row {
             anchors.right: parent.right
             anchors.rightMargin: 6
@@ -30,22 +31,22 @@ Rectangle {
                 width: 64; height: 24; hoverEnabled: true
                 Accessible.name: "Limpar o terminal"
                 onClicked: { terminal.clear(); tp.focusTerm(); }
-                background: Rectangle { radius: 6; color: parent.hovered ? "#2b2b33" : "transparent" }
-                contentItem: Text { font.family: Theme.sans; text: "Limpar"; color: "#a1a1aa"; font.pixelSize: 12; horizontalAlignment: Text.AlignHCenter; verticalAlignment: Text.AlignVCenter }
+                background: Rectangle { radius: 6; color: parent.hovered ? "#343c4f" : "transparent" }
+                contentItem: Text { font.family: Theme.sans; text: "Limpar"; color: "#aab2c5"; font.pixelSize: 12; horizontalAlignment: Text.AlignHCenter; verticalAlignment: Text.AlignVCenter }
             }
             AbstractButton {
                 width: 64; height: 24; hoverEnabled: true
                 Accessible.name: "Reiniciar o terminal"
                 onClicked: { terminal.stop(); terminal.clear(); terminal.start(); tp.focusTerm(); }
-                background: Rectangle { radius: 6; color: parent.hovered ? "#2b2b33" : "transparent" }
-                contentItem: Text { font.family: Theme.sans; text: "Reiniciar"; color: "#a1a1aa"; font.pixelSize: 12; horizontalAlignment: Text.AlignHCenter; verticalAlignment: Text.AlignVCenter }
+                background: Rectangle { radius: 6; color: parent.hovered ? "#343c4f" : "transparent" }
+                contentItem: Text { font.family: Theme.sans; text: "Reiniciar"; color: "#aab2c5"; font.pixelSize: 12; horizontalAlignment: Text.AlignHCenter; verticalAlignment: Text.AlignVCenter }
             }
             AbstractButton {
                 width: 28; height: 24; hoverEnabled: true
                 Accessible.name: "Fechar o terminal"
                 onClicked: tp.closeRequested()
-                background: Rectangle { radius: 6; color: parent.hovered ? "#2b2b33" : "transparent" }
-                contentItem: Text { font.family: Theme.sans; text: "✕"; color: "#a1a1aa"; font.pixelSize: 12; horizontalAlignment: Text.AlignHCenter; verticalAlignment: Text.AlignVCenter }
+                background: Rectangle { radius: 6; color: parent.hovered ? "#343c4f" : "transparent" }
+                contentItem: Text { font.family: Theme.sans; text: "✕"; color: "#aab2c5"; font.pixelSize: 12; horizontalAlignment: Text.AlignHCenter; verticalAlignment: Text.AlignVCenter }
             }
         }
     }
@@ -77,7 +78,7 @@ Rectangle {
             textFormat: TextEdit.RichText
             wrapMode: TextEdit.NoWrap
             text: terminal.html
-            color: "#d4d4d8"
+            color: "#d7dce5"
             selectionColor: Theme.ac
             selectedTextColor: Theme.acfg
             font.family: Theme.mono
