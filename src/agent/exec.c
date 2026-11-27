@@ -168,6 +168,12 @@ static char g_sudo_pw[256], g_askpass_path[512];   /* senha do sudo desta sessao
 static int g_ui_live;   /* 1 so durante o Bash do agente: repassa a saida ao vivo para a interface (marcador TOOLLIVE) */
 static size_t g_live_total;
 static void ui_live(const char *b, size_t n) {
+    if (n && g_ui_live && !getenv("KATANA_UI")) {            /* console: mostra a saida enquanto o comando roda (download, apt, build) */
+        if (g_live_total > ((size_t)64 << 10)) return;
+        g_live_total += n;
+        fwrite(b, 1, n, stderr); fflush(stderr);
+        return;
+    }
     if (!n || !g_ui_live || !getenv("KATANA_UI")) return;
     if (g_live_total > ((size_t)256 << 10)) return;          /* limite por comando; o resultado final vem em TOOLOUT */
     g_live_total += n;
@@ -240,6 +246,7 @@ static int run_cmd_ex(const char *cmd, int tmo, HT *ht, int *rc, int *timedout, 
     sigaction(SIGINT, &sa, &old);
     g_cmd_int = 0;
     const double t0 = cm_now();
+    double t_beat = t0;
     int exited = 0, st = 0, eof = 0;
     char buf[8192];
     while (!eof) {
@@ -250,9 +257,15 @@ static int run_cmd_ex(const char *cmd, int tmo, HT *ht, int *rc, int *timedout, 
         const int w = poll(&p, 1, exited ? 100 : 200);
         if (w > 0) {
             const ssize_t n = read(pf[0], buf, sizeof buf);
-            if (n > 0) { ht_add(ht, buf, (size_t)n); ui_live(buf, (size_t)n); if (g_cmd_tap) g_cmd_tap(buf, (size_t)n); }
+            if (n > 0) { ht_add(ht, buf, (size_t)n); t_beat = cm_now(); ui_live(buf, (size_t)n); if (g_cmd_tap) g_cmd_tap(buf, (size_t)n); }
             else if (n == 0 || (errno != EINTR && errno != EAGAIN)) eof = 1;
         } else if (w == 0 && exited) break;                  /* o shell acabou e nada mais chega (processo em segundo plano segurando o cano) */
+        else if (w == 0 && g_ui_live && !getenv("KATANA_UI") && cm_now() - t_beat >= 15.0) {    /* console: comando calado, avisa que segue rodando */
+            t_beat = cm_now();
+            fprintf(stderr, "\n[command still running, %.0f s", cm_now() - t0);
+            if (tmo > 0) fprintf(stderr, " of %d s allowed", tmo);
+            fprintf(stderr, "; Ctrl+C stops it]\n"); fflush(stderr);
+        }
     }
     close(pf[0]);
     if (*timedout || *interrupted) {
