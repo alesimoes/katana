@@ -137,9 +137,9 @@
   .ways { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 16px; margin-top: 18px; }
 
   /* desktop */
-  .gallery { display: grid; grid-template-columns: 1.3fr 1fr; gap: 18px; }
+  .gallery { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 18px; align-items: start; }
   .gallery figure { margin: 0; }
-  .gallery img { display: block; width: 100%; border-radius: 12px; border: 1px solid var(--bd); box-shadow: 0 12px 32px var(--shadow); }
+  .gallery img { display: block; width: 100%; aspect-ratio: 1000 / 695; object-fit: cover; object-position: top; border-radius: 12px; border: 1px solid var(--bd); box-shadow: 0 12px 32px var(--shadow); }
   .gallery figcaption { color: var(--mut); font-size: .86rem; margin-top: 8px; }
   .gallery .stack { display: grid; gap: 18px; }
 
