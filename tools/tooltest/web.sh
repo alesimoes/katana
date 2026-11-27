@@ -109,6 +109,8 @@ if command -v python3 >/dev/null 2>&1; then
   P=$(cat "$T/port" 2>/dev/null)
   B="http://127.0.0.1:$P"
   export KATANA_WEB_ALLOW_LOCAL=1
+  export KATANA_EMBED=0                          # so a nota por palavras: com o servico de embeddings o trecho escolhido depende do modelo instalado
+  export KATANA_WEB_OFFLINE_ROUTER=1             # o passo "outra fonte" da escada nao consulta a internet de verdade (Wikipedia etc.) para um 404 local
   nowms() { python3 -c 'import time; print(int(time.time()*1000))'; }
   entry() { printf '%s. %s\n   %s\n   %s\n   (sources: bing)\n' "$1" "$2" "$3" "$4"; }
   FIXL="$(entry 1 'Rust ownership guide' "$B/p1" 'About ownership')
@@ -196,9 +198,11 @@ $(entry 2 'Rust ownership guide' "$B/p1" 'About ownership')"
   r=$("$K" tool WebFetch "{\"url\":\"$B/nopage\",\"prompt\":\"x\"}" 2>&1)
   has "fetch: 404 sem corpo e erro" "error: HTTP 404 (Not Found) from $B/nopage: there is no page at this address" "$r"
   r=$("$K" tool WebFetch "{\"url\":\"$B/gone\",\"prompt\":\"borrow checker\"}" 2>&1)
-  case "$r" in "error: HTTP 404 (Not Found)"*) ok "fetch: 404 com corpo comeca com error:";; *) bad "fetch: 404 com corpo comeca com error:" "$r";; esac
+  case "$r" in "[web: error, via plain, 0 of 0 bytes of text, quality 0]"*) ok "fetch: 404 com corpo comeca com a linha de estado error";; *) bad "fetch: 404 com corpo comeca com a linha de estado error" "$r";; esac
+  has "fetch: 404 com corpo traz o erro HTTP" "error: HTTP 404 (Not Found) from $B/gone" "$r"
   hasnt "fetch: o texto da pagina de erro nao entra" "friendly page" "$r"
-  has "fetch: 404 manda procurar o endereco certo" "find the right one with WebSearch" "$r"
+  has "fetch: 404 manda procurar o endereco certo" "Another source: WebSearch with query \"gone\" and read a different site." "$r"
+  has "fetch: 404 nao repete o endereco" "Do not fetch this address again" "$r"
   r=$("$K" tool WebFetch "{\"url\":\"$B/boom\",\"prompt\":\"x\"}" 2>&1)
   has "fetch: 500 e erro" "error: HTTP 500 (Internal Server Error)" "$r"
   r=$("$K" tool WebFetch "{\"url\":\"$B/gone\",\"prompt\":\"x\"}" 2>&1)
@@ -264,7 +268,7 @@ if curl -sS -m 6 -o /dev/null https://example.com/ 2>/dev/null; then
   # pagina longa: a selecao tem de respeitar o limite (cap do katana tool e grande; usa a Wikipedia)
   r=$("$K" tool WebFetch '{"url":"https://en.wikipedia.org/wiki/Rust_(programming_language)","prompt":"borrow checker ownership"}' 2>&1)
   has "rede fetch: pagina longa diz o que ficou sem ler" "bytes were not returned" "$r"
-  has "rede fetch: pagina longa escolhe pelo prompt" "the passages that mention the words of the prompt" "$r"
+  has "rede fetch: pagina longa escolhe pelo prompt" "the passages that mention" "$r"
 else
   echo "SKIPPED rede (sem conexao): fetch e busca de verdade"
 fi

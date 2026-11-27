@@ -595,7 +595,7 @@ Repeating a search after a context compaction therefore costs nothing.
 
 Test hooks (used by `tools/tooltest/web.sh`, with a local server and no internet): `KATANA_WEBSEARCH_FIXTURE` (fixed
 search results; pages are then read only when `KATANA_WEB_ALLOW_LOCAL=1`), `KATANA_WEB_ALLOW_LOCAL=1` (accept
-`http://127.0.0.1` URLs and do not upgrade http).
+`http://127.0.0.1` URLs and do not upgrade http). `KATANA_EMBED=0` keeps the passage choice to word scores; `KATANA_WEB_OFFLINE_ROUTER=1` makes the "another source" step of the ladder skip the router (no internet).
 
 ### Tasks, questions, plan mode
 `TodoWrite(todos, done)` writes the list and marks steps finished. One list underneath (the one the desktop card shows). `AskUserQuestion(questions)`: 1 to 4 questions with 2 to 4 options

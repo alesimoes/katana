@@ -417,6 +417,7 @@ static void wn_query(const char *url, const WnPage *pg, char *q, size_t cap) {
     for (const char *p = a; p < path + pl && n + 2 < cap && n < 100; p++) q[n++] = (*p == '/' || *p == '-' || *p == '_' || *p == '.' || *p == '+' || *p == '"') ? ' ' : *p;
     q[n] = 0;
     while (n > 0 && q[n - 1] == ' ') q[--n] = 0;
+    { size_t z = 0; while (q[z] == ' ') z++; if (z) memmove(q, q + z, n - z + 1), n -= z; }     /* o "/" do primeiro segmento nao fica como espaco no comeco */
     if (n < 4) snprintf(q, cap, "%.*s", (int)strcspn(host, "/?#"), host);
 }
 static int wn_tried_has(const char *tried, const char *route) {
@@ -426,6 +427,8 @@ static int wn_tried_has(const char *tried, const char *route) {
 }
 static WnPage *ws_fetch_page(const char *url);                       /* agent/websrc.c */
 static int ws_other_sources(const char *q, const char *url, char *o, size_t cap);
+/* KATANA_WEB_OFFLINE_ROUTER=1: o passo "outra fonte" da escada nao consulta o roteador (testes sem rede); sem a chave, comportamento normal */
+static int wn_offline_router(void) { const char *e = getenv("KATANA_WEB_OFFLINE_ROUTER"); return e && e[0] == '1'; }
 /* a linha "[next: ...]" para um resultado que nao e ok. state: shell, empty, blocked, login, error. pg pode ser NULL (falha antes de haver pagina) */
 static void wn_next(const char *url, const char *state, const WnPage *pg, const char *tried, char *o, size_t cap) {
     size_t n = 0;
@@ -450,7 +453,7 @@ static void wn_next(const char *url, const char *state, const WnPage *pg, const 
     {   /* passo "outra fonte" da escada: o roteador de fontes busca o mesmo assunto, se ainda ha tempo */
         char alt[1200];
         const double left = g_wn_deadline > 0 ? g_wn_deadline - now_sec() : 20.0;
-        if (!g_wn_no_search && left > 8.0 && ws_other_sources(q, url, alt, sizeof alt) > 0) { snprintf(o + n, cap - n, " Other sources found by the router for \"%s\": %s.]", q, alt); return; }
+        if (!g_wn_no_search && !wn_offline_router() && left > 8.0 && ws_other_sources(q, url, alt, sizeof alt) > 0) { snprintf(o + n, cap - n, " Other sources found by the router for \"%s\": %s.]", q, alt); return; }
     }
     snprintf(o + n, cap - n, " Another source: WebSearch with query \"%s\" and read a different site.]", q);
 }
