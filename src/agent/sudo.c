@@ -39,8 +39,10 @@ static void pwfile_write(void) {
     close(fd);
     if (!reg) { atexit(pwfile_remove); reg = 1; }
 }
+static void launch_spin_pause(void);                 /* src/app/launch.c: o spinner sai da frente da pergunta */
 static int sudo_ask(char *pw, size_t cap, int retry) {
     pw[0] = 0;
+    launch_spin_pause();
     if (getenv("KATANA_UI")) {
         printf("\x01" "NEEDPASS%s\n", retry ? " retry" : ""); fflush(stdout);
         char l[512];
@@ -80,6 +82,7 @@ static void ia_clean(const char *s, char *o, size_t cap, int esc) {
 }
 static int input_ask(int id, int masked, const char *label, const char *question, const char *ctx, const char *hints, char *out, size_t cap) {
     out[0] = 0;
+    launch_spin_pause();
     static char lb[240], qs[600], cx[2000], hs[3000];
     ia_clean(label, lb, sizeof lb, 0);
     ia_clean(question, qs, sizeof qs, 0);
