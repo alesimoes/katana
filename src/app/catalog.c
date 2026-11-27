@@ -12,10 +12,12 @@
 #endif
 
 /* organizacao no Hugging Face que hospeda os arquivos convertidos pelo katana (embedder, imagem). */
-#define KATANA_HF_ORG "katana-llm"
-/* ATENCAO: os arquivos convertidos ainda nao foram enviados; "main" e provisorio. Depois do envio, trocar KATANA_HF_REV
-   pela revisao exata (hash do commit) de cada repositorio, como ja e feito com os modelos de origem. O sha256 e o tamanho
-   abaixo sao dos arquivos locais que serao hospedados e sao sempre conferidos no download. */
+#define KATANA_HF_ORG "alesimoes"
+/* revisoes exatas (hash do commit) dos repositorios com os arquivos convertidos, enviados em 2026-11-27 (privados por enquanto:
+   o download so funciona com token ate o repositorio ficar publico). O sha256 e o tamanho abaixo sao conferidos no download.
+   O sd15 ainda nao foi enviado (licenca em revisao, ver tools/release/LICENSES.md): a revisao "main" e provisoria. */
+#define KATANA_REV_FLUX "97cc03901b5925c3fe372a63407c9375442fd92c"
+#define KATANA_REV_EMBED "e2057c5b795ebbe0890c8bebe609c53c26792a68"
 #define KATANA_HF_REV "main"
 
 typedef struct { const char *remote, *dest, *sha; long long bytes; } CatFile;   /* remote: caminho no repositorio; dest: caminho dentro da pasta de modelos */
@@ -54,11 +56,11 @@ static const CatItem g_cat[] = {
       "32 GB de memoria ou mais; o melhor com ferramentas e programacao" },
     { "qwen3.6-vision", "Qwen3.6 vision projector", "vision", "unsloth/Qwen3.6-35B-A3B-GGUF", "a483e9e6cbd595906af30beda3187c2663a1118c", CF(cf_vision), 0, 0,
       "deixa o Qwen3.6 ler imagens e capturas de tela" },
-    { "embeddinggemma-2", "EmbeddingGemma 2 (q8_0)", "embedder", KATANA_HF_ORG "/embeddinggemma-2-gguf", KATANA_HF_REV, CF(cf_embed), 0, 0,
+    { "embeddinggemma-2", "EmbeddingGemma 2 (q8_0)", "embedder", KATANA_HF_ORG "/katana-embeddinggemma", KATANA_REV_EMBED, CF(cf_embed), 0, 0,
       "busca por significado nos arquivos, na memoria e nas sessoes" },
-    { "flux2-klein", "FLUX.2 klein 4B (Q4_K_M)", "image", KATANA_HF_ORG "/flux2-klein-4b-gguf", KATANA_HF_REV, CF(cf_flux), 0, 0,
+    { "flux2-klein", "FLUX.2 klein 4B (Q4_K_M)", "image", KATANA_HF_ORG "/katana-flux2-klein", KATANA_REV_FLUX, CF(cf_flux), 0, 0,
       "gera imagens de alta qualidade; precisa de uma placa de video" },
-    { "sd15", "Stable Diffusion 1.5 (Realistic Vision + ControlNet)", "image", KATANA_HF_ORG "/sd15-gguf", KATANA_HF_REV, CF(cf_sd15), 0, 0,
+    { "sd15", "Stable Diffusion 1.5 (Realistic Vision + ControlNet)", "image", KATANA_HF_ORG "/katana-sd15", KATANA_HF_REV, CF(cf_sd15), 0, 0,
       "gera imagens com poucos recursos; inclui ControlNet canny e o modo rapido LCM" },
 };
 #define N_CAT ((int)(sizeof g_cat / sizeof g_cat[0]))
@@ -232,6 +234,13 @@ static int pull_file(const CatItem *c, const CatFile *f, const char *dir) {
         signal(SIGTERM, pull_sig); signal(SIGINT, pull_sig);
         const pid_t pid = fork();
         if (pid == 0) {
+            /* repositorio privado: HF_TOKEN vira o cabecalho de autorizacao (so para o Hugging Face) */
+            const char *tok = getenv("HF_TOKEN");
+            char auth[600];
+            if (tok && *tok && strstr(url, "://huggingface.co/")) {
+                snprintf(auth, sizeof auth, "Authorization: Bearer %s", tok);
+                execlp("curl", "curl", "-sS", "-L", "--fail", "--retry", "3", "--connect-timeout", "20", "-C", "-", "-H", auth, "-o", part, url, (char *)NULL);
+            }
             execlp("curl", "curl", "-sS", "-L", "--fail", "--retry", "3", "--connect-timeout", "20", "-C", "-", "-o", part, url, (char *)NULL);
             _exit(127);
         }

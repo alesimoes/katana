@@ -94,9 +94,9 @@ for g in $LISTA; do
   echo ""
   echo ">> criando $repo ($VIS)"
   if [ "$PUBLICO" = 1 ]; then
-    hf repo create "$repo" --repo-type model --exist-ok || { rm -rf "$stage"; exit 1; }
+    hf repos create "$repo" --repo-type model --exist-ok || { rm -rf "$stage"; exit 1; }
   else
-    hf repo create "$repo" --repo-type model --private --exist-ok || { rm -rf "$stage"; exit 1; }
+    hf repos create "$repo" --repo-type model --private --exist-ok || { rm -rf "$stage"; exit 1; }
   fi
   echo ">> enviando $repo (um commit)"
   log=$(mktemp)
