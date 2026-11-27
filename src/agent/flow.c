@@ -474,9 +474,17 @@ static size_t flow_request_body(const char *ureq, char *out, size_t cap) {
     static const char *const yes[] = {"aprov", "sim", "pode", "gostei", "perfeito", "otim", "approved", "yes", "looks good", "alta defini", "flux", "final", NULL};
     static const char *const chg[] = {"mais ", "menos", "cor", "mude", "muda", "troque", "troca", "change", "more ", "less ", "add", "adicion", "remov", "tir", "coloc", "fundo", "estilo", "style", "maior", "menor", "outra", "de novo", "again", "nao gostei", "refaz", NULL};
     static const char *const go[] = {"continu", "segue", "siga", "go on", "prossiga", "vai", "pode", "sim", "ok", "yes", NULL};
+    /* o usuario cancela ou troca o objetivo no meio da conversa (nao so uma mudanca de detalhe, como "chg" acima): o plano
+       antigo (TodoWrite) e descartado e o proximo pedido do motor avisa para nao reciclar a moldura, o plano nem as
+       conclusoes de antes. Sem isto o modelo seguia preso ao pedido original (visto na pasta rea, 2026-11-27: o usuario
+       disse para esquecer o flash.locked e buscar root, e o modelo repetiu o plano e a resposta de antes por duas vezes). */
+    static const char *const cancel[] = {"esquec", "mudei de ideia", "muda de ideia", "nao e isso", "nao quero mais isso", "nao quero isso",
+        "deixa isso de lado", "ignora isso", "ignore isso", "scratch that", "never mind", "forget it", "forget about", "nevermind", NULL};
     char t[2048]; fl_fold(ureq, t, sizeof t);
+    const int canceled = fl_any(t, cancel);
     g_fl.req++; g_fl.dev[0] = 0; g_fl.plan_calls = 0;
     out[0] = 0;
+    if (canceled) { todo_clear(); g_fl.stall = 0; g_fl.plan_was = 0; }      /* plano velho fora: o proximo TodoWrite comeca do zero */
     if (fl_in(FL_TERMINAL) && !fl_job_alive(g_fl.task)) { g_fl.depth = fl_in(FL_TERMINAL); fl_pop("task gone"); }      /* a tarefa acabou entre os pedidos */
     const int want = fl_classify(t);
     const FlowPos *top = fl_top();
@@ -496,9 +504,14 @@ static size_t flow_request_body(const char *ureq, char *out, size_t cap) {
     if (want == FL_NONE && !g_fl.depth) rz_try_recall(t, fl_any(t, go) && strlen(t) < 120);      /* o usuario volta a um trabalho suspenso (desligado) */
     if (fl_id() == FL_CODE) fl_find_verify();
     flow_grammar_mask();
-    if (!fl_top()) return 0;
+    static const char CANCEL_NOTE[] =
+        "[katana: the user just canceled or redirected the previous goal in this message. Do not reuse the earlier framing, "
+        "the earlier plan or the earlier conclusions, even if the new goal looks related; if you wrote a TodoWrite plan or an "
+        "answer about the old goal, that plan and that answer no longer apply. Treat only this message as what the user wants now.]\n";
+    if (!fl_top()) { if (canceled) snprintf(out, cap, "%s", CANCEL_NOTE); return strlen(out); }
     g_fl.emitted_st = -1;
-    const size_t n = fl_line(out, cap, "");
+    size_t n = canceled ? (size_t)snprintf(out, cap, "%s", CANCEL_NOTE) : 0;
+    n += fl_line(out + n, cap - n, "");
     if (n + 400 < cap) flow_jit(out + n, cap - n);
     return strlen(out);
 }
