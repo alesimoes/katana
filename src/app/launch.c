@@ -212,8 +212,7 @@ static int lc_model_resolve(const char *opt, char *out, size_t cap, char *why, s
     static LcModelFile v[256];
     const int n = lc_models_scan(dir, v, 256);
     if (n == 0) {
-        snprintf(err, ecap, "nenhum modelo instalado em %s.\n  katana catalog           lista os modelos que da para baixar\n  katana pull <id>         baixa um deles (ex.: katana pull qwen3.6-35b)\n"
-                 "  katana --model <arquivo.gguf>   usa um arquivo que voce ja tem", dir);
+        snprintf(err, ecap, "nenhum modelo instalado em %s\nrun: katana setup", dir);
         return 2;
     }
     HwInfo h; memset(&h, 0, sizeof h);      /* so a memoria: nao acorda a placa de video so para escolher */
@@ -224,7 +223,7 @@ static int lc_model_resolve(const char *opt, char *out, size_t cap, char *why, s
 #endif
     if (getenv("KATANA_LAUNCH_RAM_GB")) h.ram_gb = atof(getenv("KATANA_LAUNCH_RAM_GB"));      /* testes */
     const CatItem *best = cat_best(&h);
-    if (best) for (int i = 0; i < n; i++) if (!strcmp(v[i].name, best->file)) {
+    if (best) for (int i = 0; i < n; i++) if (!strcmp(v[i].name, best->files[0].dest)) {
         lc_join(p, sizeof p, dir, v[i].name); lc_realpath(p, out, cap);
         snprintf(why, wcap, "o recomendado do catalogo (%s)", best->name); return 0;
     }
@@ -1360,7 +1359,7 @@ static void lc_cleanup_tmp(void) { if (g_mcp_tmp[0]) remove(g_mcp_tmp); }
 static int lc_known_cmd(const char *a) {
     static const char *const K[] = {"serve", "mcp", "jsontest", "toolrun", "tool", "agentsys", "toolparse", "calibrar", "agent", "routing", "sparsity", "tune",
         "verify", "pack", "prepare", "micro", "vkmicro", "bench", "vkcheck", "qtest", "quantize", "convert", "knowledge", "import", "merge", "distill", "agentlog", "export",
-        "learn", "specialize", "gradcheck", "train", "selftest", "snaptest", "snapreplay", "attbench", "q4check", "q4bench", "q4gpu", "toktest", "tokenize", "hw", "catalog", "pull", "sha256", "models", "info", "chat", "run",
+        "learn", "specialize", "gradcheck", "train", "selftest", "snaptest", "snapreplay", "attbench", "q4check", "q4bench", "q4gpu", "toktest", "tokenize", "hw", "catalog", "setup", "pull", "sha256", "models", "info", "chat", "run",
         "install", "uninstall", "adopt", "init", "skill", "brief", "memory", "calltest", "samplertest", "curriculum", "lbtest", "compare", "compacttest", "codebench", "coder", "docsel", "uioe",
         "kerneltest", "lookuptest", "spectime", "placenote", "version", "update", "vision", NULL};      /* a mesma lista do main.c: acrescente aqui os subcomandos novos */
     for (int i = 0; K[i]; i++) if (!strcmp(a, K[i])) return 1;

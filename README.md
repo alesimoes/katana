@@ -69,9 +69,16 @@ katana adopt --instructions OLD.md --mcp OLD.json --skills OLD/skills   # bring 
 Models (the minimum is 24 GB of RAM; the catalog is fixed in the engine, pinned by revision and sha256):
 
 ```
+./katana setup                     # one command: shows the machine, picks the LLM that fits and offers vision, embedder and image models
+./katana setup --yes               # no questions: LLM + vision projector + embedder (add --all or --with image for the image models)
 ./katana hw                        # RAM, GPU, VRAM, free disk
 ./katana catalog                   # models the engine can download, what fits here, the recommended one
 ./katana pull qwen3.6-35b          # download (resumes an interrupted one) and verify
+```
+
+`katana catalog` also lists the extras (kinds `llm`, `vision`, `embedder`, `image`); every file is verified by sha256 on download. The converted files (embedder, image models) are hosted under the `KATANA_HF_ORG` account in `src/app/catalog.c`; their revision is `main` until it is pinned after upload.
+
+```
 ```
 
 The model katana is developed and tested with is **Qwen3.6-35B-A3B**: the original model is [Qwen/Qwen3.6-35B-A3B](https://huggingface.co/Qwen/Qwen3.6-35B-A3B) (model card and license), and the file `katana pull` downloads is the GGUF quantization `Qwen3.6-35B-A3B-UD-Q4_K_M.gguf` (22 GB, 32 GB of RAM or more recommended) published by [Unsloth](https://huggingface.co/unsloth/Qwen3.6-35B-A3B-GGUF), pinned by revision and sha256 in the catalog.

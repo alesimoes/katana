@@ -5,6 +5,17 @@ Vulkan backend. To resume: read this file, then `knowledge.md` (everything that 
 `comparisons.md` (all comparison tables) and `plan.md` (priorities).
 
 
+## Update (2026-11-27): `katana setup` and the full catalog
+
+`src/app/catalog.c` now has item kinds (`llm`, `vision`, `embedder`, `image`) and items made of several files (each with remote path, destination
+inside the models dir, sha256 and size). New items: `qwen3.6-vision` (upstream mmproj), `embeddinggemma-2` (q8_0), `flux2-klein` (3 files in
+`flux2klein/gguf/`), `sd15` (3 files in `render/`); destinations are exactly where the engine looks for them. `katana catalog` has a new last column
+(kind); the desktop skips non-LLM rows. `katana setup [--yes] [--all] [--with vision,embedder,image]` shows `hw`, picks the recommended LLM, asks which extras to
+fetch (default LLM + vision + embedder; image is opt-in), pulls with resume and prints how to start; with no tty and no `--yes` it only prints the plan.
+Running `katana` with no model installed prints `run: katana setup`. `pull` now always verifies sha256 (also with `KATANA_PULL_URL`).
+**Pending:** the converted files are not uploaded yet; `KATANA_HF_ORG` (`katana-llm`) and `KATANA_HF_REV` (`main`) in `catalog.c` are placeholders to pin after upload.
+Compiled only; nothing was measured and no download was run.
+
 ## Current state (2026-11-23, the page to read first)
 
 `main` is at commit `44748e1` and is already pushed. Everything below compiles; **nothing in this list was measured** and none of it was run in a
