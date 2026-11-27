@@ -15,8 +15,9 @@ Motor de inferência de modelos de linguagem escrito do zero em C. `src/katana.c
 - Nada proprietário. O motor de inferência roda sem serviços externos; as ferramentas do agente podem
   buscar conhecimento fora do modelo (internet, arquivos da máquina, memória própria), como o dono quer.
 - Exceção ao "nada proprietário", só na camada de GPU (decisão do dono, 2026-11-24): CUDA, pela API do driver carregada em tempo de execução (dlopen/LoadLibrary, sem SDK nem biblioteca da NVIDIA; kernels em PTX; `src/engine/cu_*.c`); sem placa NVIDIA tudo continua funcionando.
-- Repositório privado (github.com/alesimoes/katana): commit e push a cada passo concluído; não
-  tornar público sem pedido.
+- Repositório público (github.com/alesimoes/katana), licença Apache-2.0; recriado em 2026-11-27 com o histórico limpo
+  (e-mail dos commits: o noreply do GitHub, configurado em `.git/config`). Commit e push a cada passo concluído. Nunca
+  commitar com e-mail de empresa, chaves, tokens, binários de terceiros nem arquivos de `models/`.
 - Projeto novo, sem legado e sem compatibilidade (decisão do dono, 2026-11-23): não manter formatos antigos, aliases de nomes antigos, chaves de ambiente que só voltam ao comportamento antigo, nem código de migração. Quando um formato muda, o dado antigo é reconstruído ou descartado.
 - O dono do projeto quer trabalho contínuo, sem perguntas desnecessárias. Perguntar só antes de
   ações difíceis de desfazer ou que saiam da máquina.
