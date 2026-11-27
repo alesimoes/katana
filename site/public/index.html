@@ -255,8 +255,16 @@
       <h3>Native desktop</h3><p>A Qt 6 window, no browser: conversations, tool cards, the plan, a context meter and a built-in terminal. Conversations are saved and resume with their context.</p></div>
     <div class="f"><div class="ic"><svg width="22" height="22" viewBox="0 0 24 24" aria-hidden="true"><use href="#i-cube"/></svg></div>
       <h3>Models and specializations</h3><p>Pulls a pinned, checksummed model file. <code>katana train</code> writes <code>.kspec</code> specializations, loaded from <code>~/.katana/specs</code> and listed in the app's settings.</p></div>
+    <div class="f"><div class="ic"></div>
+      <h3>Understanding before the model <span class="badge new">new</span></h3><p>A layer in C reads each request first: it classifies it, picks sources, fetches what it needs (a URL you type is read directly) and hands the model a compact context. Nothing leaves the machine unless you turn web search on.</p></div>
+    <div class="f"><div class="ic"></div>
+      <h3>Prefix cache <span class="badge new">new</span></h3><p>The state of the conversation prefix, including the Vulkan path of the 35B model, is kept and reused, so a new turn does not re-read the whole prompt. Each turn logs how much was new and how much was reused.</p></div>
+    <div class="f"><div class="ic"></div>
+      <h3>Sampling controls <span class="badge new">new</span></h3><p>min-p, typical-p, Mirostat, DRY, repeat, presence and frequency penalties, logit bias and a seed, per request or by environment variable. Defaults are neutral.</p></div>
+    <div class="f"><div class="ic"></div>
+      <h3>Faster cold experts <span class="badge new">new</span></h3><p>Four-row AVX-512 VNNI kernels for the experts that run on the CPU, software prefetch, and a helper thread that guesses the next layer's experts while the GPU works.</p></div>
   </div>
-  <p class="note" style="text-align:center;margin-top:18px">Items marked <span class="badge new">new</span> compile and have had narrow checks, but have not been measured against real tasks.</p>
+  <p class="note" style="text-align:center;margin-top:18px">Items marked <span class="badge new">new</span> compile and have had narrow synthetic checks, but have not been measured on the model or against real tasks.</p>
 </section>
 
 <section id="images" aria-labelledby="h-images">
