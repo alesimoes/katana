@@ -1,5 +1,7 @@
 # katana
 
+Regras de trabalho do assistente neste repositório. O que qualquer contribuidor precisa (compilar, estrutura, estilo, verificações) está em `CONTRIBUTING.md`; o estado atual do projeto, em `docs/handoff.md`.
+
 Motor de inferência de modelos de linguagem escrito do zero em C. `src/katana.c` é a unidade de compilação única e só inclui as partes: `src/engine/` (inferência), `src/agent/` (camadas em cima do modelo: ferramentas, prompt, terminal, contexto, sessões) e `src/app/` (console, servidor, main). Leia primeiro:
 - `docs/handoff.md`: estado atual, próximos passos em ordem, pendências e como retomar.
 - `docs/comparisons.md`: todas as comparações medidas (contra o motor de referência e entre versões do katana).
@@ -8,7 +10,7 @@ Motor de inferência de modelos de linguagem escrito do zero em C. `src/katana.c
 - `docs/optimization-roadmap.md`: técnicas ainda não usadas, com ganho esperado e esforço.
 - `desktop-qt/README.md`: katana-desktop, aplicativo nativo Qt6/QML (sem navegador) que conversa com o agente.
 
-## Regras
+## Regras (do dono)
 
 - Conversa com o dono em português. Documentação (README, `docs/`, README do desktop) em inglês, por pedido do dono (2026-11-18). Comentários no código em português sem acentos.
 - O código não cita outros motores de inferência; em documentos, "reference engine".
