@@ -484,7 +484,7 @@ Terms that appear in the code, the docs and the diagrams.
 
 | Term | Meaning |
 |---|---|
-| **Codegen** | A subsystem that generates code from a short spec instead of letting the model write the final code ([`docs/codegen.md`](docs/codegen.md)). Not connected to the agent yet. |
+| **Codegen (Unified Code Generation Engine)** | The engine that generates code from a short spec instead of letting the model write the final code: spec, typed AST (UIR-H), control-flow graph in SSA form (UIR-G), analyses, language adapters, validator. Backends never fill templates: they walk typed nodes and build documents. Python, JavaScript and TypeScript, C and Go backends exist; it is not connected to the agent yet ([`docs/codegen.md`](docs/codegen.md)). |
 | **Code spec (`.kcode`)** | The compact text the model writes to describe what to build. |
 | **UIR** | Codegen's typed intermediate representation: **UIR-H** is a typed AST, **UIR-G** is a control-flow graph in SSA form (designed, not built). Not related to the UIOE's evidence graph. |
 

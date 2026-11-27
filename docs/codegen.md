@@ -1,5 +1,7 @@
 # Codegen: code generation from a code spec
 
+Codegen is the **Unified Code Generation Engine**: one engine that turns a short code spec into code in several languages, through a typed AST, instead of asking the model to write the final code or filling text templates.
+
 Status: phase 1 (design and core) and the phase 2 modules A (JavaScript and TypeScript backends, section 17), B (C and Go backends, sections 12b and 12c), C (type inference, section 5b), D (graphs, analyses, optimizer, section 16), I, J and K (registry, incremental AST, dependency graph, code cache, section 15) are done; phases 2 (the rest) and 3 are planned at the end of this page. The code is included in `src/katana.c` (after `coder/symedit.c`, in the order of `tools/codegen/codegencli.c`) but nothing in katana calls it yet: a local `#pragma GCC diagnostic` around the include block silences the unused-function warning until the `CodeGen` tool exists. The files are `static`, plain C, and also compile standalone with `tools/codegen/codegencli.c`. Phase 2 adds the `CodeGen` tool.
 
 Names: the module is "codegen" and the input format is the "code spec" (files `.kcode`; not `.kspec`, which is the model specialization file, see `docs/specialization.md`). The internal prefixes `cgx_`, `Cgx` and `CGN_` mean "codegen" and are kept as they are.
