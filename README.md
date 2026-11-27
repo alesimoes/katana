@@ -19,6 +19,7 @@ external service; the agent reaches outside the model (web, files, shell, MCP se
 [Desktop app](#desktop-app) ·
 [Server and API](#server-and-api) ·
 [Configuration](#configuration) ·
+[Glossary](#glossary) ·
 [Repository map](#repository-map) ·
 [Status and limits](#status-and-limits) ·
 [Author](#author) ·
@@ -424,6 +425,68 @@ Most useful environment variables; the full list is in [`docs/handoff.md`](docs/
 | `KATANA_PFX=0`, `KATANA_CACHE_DIR=<dir>` | agent: disable or move the on-disk prefix cache |
 | `KATANA_JSON=1` | `run`/`chat`: guaranteed JSON output |
 | `KATANA_UIOE=pack\|off` | agent: the context block built before the model (default `pack`; `off` is the escape and restores the old behaviour byte for byte). `KATANA_UIOE_MS` (retrieval deadline, 400), `KATANA_UIOE_TOTAL_MS` (whole step, 1500; over it nothing is injected), `KATANA_UIOE_TOKENS` (block ceiling, 1500), `KATANA_UIOE_LIMITS=1` (also inject the short "not found / limits" form), `KATANA_UIOE_LOG` (trace, default `~/.katana/uioe.log`, `0` = off) |
+
+## Glossary
+
+Terms that appear in the code, the docs and the diagrams.
+
+**Before the model (UIOE)**
+
+| Term | Meaning |
+|---|---|
+| **UIOE** | *Unified Intelligence Orchestration Engine*. The layer that runs **before** the model (`src/uioe/`, [`docs/uioe.md`](docs/uioe.md)). It spends milliseconds, in C and with no model call, to understand a request and gather evidence, because a model step costs minutes on this hardware. Modes: `pack` (default), `full`, `off`. |
+| **Interpret** | Reads the request: entities (symbols, paths, folders, quoted text, error text, config keys, URLs, dates), what is being asked and the risk (changes files, runs commands, leaves the machine, destructive). |
+| **Classify** | Decides the domain (code, files, data, research, memory, system, chat), the kind of question (locate, usage, impact, how-to, overview, error, flow...) and how hard it is (single lookup, multi-hop, multi-source). |
+| **Route** | Chooses which sources can answer (the code index, files, memory, the web registry) and which cannot, and says why a source was left out. |
+| **Retrieve** | Runs the queries through the same engine behind `Find` and `Symbols`, re-reads the files to verify what it found, and builds a graph of the evidence. |
+| **Orchestrate** | Sequences the steps and respects the deadline (`KATANA_UIOE_MS`, `KATANA_UIOE_TOTAL_MS`). |
+| **Evidence graph (`UG_*` in the code)** | The graph the retrieval builds: nodes are files, line ranges, symbols, keys, documentation lines and facts; edges are calls, definitions, uses, imports, sends, handles, links, contains and mentions. `UG_*` is the prefix of its limits and of the decision below. |
+| **Decision (`UG_NONE`, `UG_LIMITS`, `UG_PACKET`)** | What the UIOE does with the result. `UG_NONE`: inject nothing (a greeting, a vague request, low confidence, a deadline overrun). `UG_LIMITS`: inject only "not found / limits" plus the next step. `UG_PACKET`: inject the full block. The block goes in when confidence is 70 or more. |
+| **Context block (packet)** | The `[katana: context for this request ...]` text appended to the user's message, at most 1500 tokens. The system prompt never changes, so the prefix cache stays valid. |
+| **Connectors (U9 and others)** | Sources the retrieval can call outside the code index: the web registry, `web.fetch` for URLs you type, result caches, MCP. Anything that leaves the machine is explicit and traced. |
+| **Trust classes** | Every piece of retrieved text is tagged by origin and enters the context as data, not as instructions (the defence against prompt injection). |
+| **Facades** | `Find` and `Symbols` are facades of the same UIOE state, so what the block already showed is not repeated by a tool call. |
+
+**Agent and code**
+
+| Term | Meaning |
+|---|---|
+| **Agent loop** | The cycle: the model answers or calls a tool, the tool runs, the result goes back as data, until the model answers. |
+| **Tool** | A function the model can call (`Bash`, `Read`, `Edit`, `Find`, `Symbols`, ...). Twelve are declared in the prompt; the rest are loaded on demand with `ToolSearch`. |
+| **MCP** | Model Context Protocol: a standard for plugging outside tools into the agent. |
+| **KATANA.md ("brief")** | Per-project instructions the agent reads: rules, how to test, what must never be done. |
+| **Skill** | A named set of instructions the model can load. |
+| **Flow** | A playbook with states and transitions for a kind of job (plan, code, image...), in `src/agent/flow.c` ([`docs/flows.md`](docs/flows.md)). |
+| **Code index / coder** | `src/coder/`: a per-folder index built in levels (tree, text, symbols, links) that `Find`, `Symbols` and the UIOE query. Works without a model (`katana coder`). |
+| **Edit by symbol** | `Edit` where the model names the symbol; the engine finds it with a fresh parse, checks the result and only then writes. |
+| **Teacher mode** | An optional plugin that lets another model, reached over the network, answer in place of the local one, so the local one can learn from its answers ([`docs/teacher-protocol.md`](docs/teacher-protocol.md)). Only used when you enable it. |
+
+**Engine**
+
+| Term | Meaning |
+|---|---|
+| **GGUF** | The model file format katana reads. |
+| **MoE** | Mixture of Experts: each layer has many experts and a router picks a few per token (for example 8 of 128), so only a fraction of the weights work per token. |
+| **Expert cache** | VRAM slots hold the hottest experts; the others run on the CPU from the memory-mapped file. |
+| **Heat** | How recently and how often an expert was used, with decay. Saved between sessions in `<model>.gguf.ktn.heat`. |
+| **KV cache** | The attention keys and values of the conversation so far, kept in fp16. |
+| **Prefix cache** | The saved state of the conversation prefix (system prompt, and on the Vulkan path of Qwen3.6 the attention and DeltaNet state), reused by the next turn or session. |
+| **Gated DeltaNet** | The linear-attention layers of the Qwen3.6 hybrid architecture; they keep a recurrent state instead of a KV cache. |
+| **Cold / hot expert** | Not resident / resident in a VRAM slot. A cold expert is computed on the CPU on the spot. |
+| **VNNI** | The AVX-512 integer dot-product instructions used by the CPU kernels on quantized blocks. |
+| **Speculation (by copy)** | When recent context repeats, four tokens are verified in one pass; the output is identical. |
+| **Grammar** | A constraint on the sampler so the output is valid JSON or follows a schema; in the agent it limits tool calls to real tools. |
+| **`.kspec`** | A small adapter file that specializes a model, written by `katana train` ([`docs/specialization.md`](docs/specialization.md)). Not the same as a code spec. |
+| **`mmproj`** | The multimodal projector: the vision encoder and projector that turn an image into tokens the language model understands. |
+| **Catalog** | The fixed list of downloadable items in the engine (`katana catalog`), each pinned by repository revision and sha256. Kinds: `llm`, `vision`, `embedder`, `image`. |
+
+**Code generation (partly built)**
+
+| Term | Meaning |
+|---|---|
+| **Codegen** | A subsystem that generates code from a short spec instead of letting the model write the final code ([`docs/codegen.md`](docs/codegen.md)). Not connected to the agent yet. |
+| **Code spec (`.kcode`)** | The compact text the model writes to describe what to build. |
+| **UIR** | Codegen's typed intermediate representation: **UIR-H** is a typed AST, **UIR-G** is a control-flow graph in SSA form (designed, not built). Not related to the UIOE's evidence graph. |
 
 ## Repository map
 
