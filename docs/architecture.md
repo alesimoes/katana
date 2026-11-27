@@ -4,13 +4,14 @@ Layers L0 to L8 with every module and every connection between them, status read
 
 ![katana architecture](img/architecture.svg)
 
-Status is shown by color and by marker shape (filled circle working, half circle partial, dashed circle planned, crossed circle disabled) and by border (solid built, dashed planned, hatched disabled). Solid arrows are data flows that exist; dashed arrows are planned. The three flow tracks at the bottom left are the request paths (text, image, code).
+Status is shown by color and by marker shape (filled circle working, half circle partial, dashed circle planned, crossed circle disabled) and by border (solid built, dashed planned, hatched disabled). Solid arrows are data flows that exist; dashed arrows are planned. The three flow tracks in the panel below the layers (not part of the layer stack) are the request paths (text, image, code); the purple pill is the L1 language model.
 
 ## How the pieces connect
 
 One line per arrow of the diagram.
 
-- Apps to UIOE: the user request, an attached image and any typed URLs enter the UIOE first.
+- Apps to UIOE: the user request and any typed URLs enter the UIOE first. An attached image does not pass through it (see the vision projector below).
+- What the UIOE receives: the request (from the user, from a tool call as a facade, or from the CLI `katana uioe ask`); the entities found in the text (symbols, paths, folders, quoted text, error text, config keys, env vars, URLs, dates, amounts); the working folder and the index roots; the state of the code index (none, partial or complete); the session state (the open investigation, the ranges already shown, the open todo steps); agent memory as dated evidence; files re-read from disk to verify evidence; the model tokenizer (for the token ceiling); and the settings `KATANA_UIOE`, the deadline and the ceiling.
 - Apps to agent loop: a message sent in the middle of a task and replies to terminal prompts (including the password dialog) skip the UIOE and go straight to the loop.
 - Agent loop to apps: answer stream, tool cards, plan, context meter and terminal events.
 - UIOE to agent loop: `uioe_prepare` returns the request plus one context block (at most 1500 tokens), or nothing.
@@ -19,7 +20,8 @@ One line per arrow of the diagram.
 - UIOE `web.fetch` and the web tools: one source registry and router; URLs typed by the user are read before the model, search only with `KATANA_UIOE_WEB=1`.
 - UIOE connectors and the code index: `code.*`, `file.*` and `docs.*` queries out, evidence with file, line and confidence back.
 - Tool table and the code index: `Find`, `Symbols`, `Edit` by symbol and `LSP` calls out; answers with a confidence level and a validation report back.
-- Agent loop to tokenizer: the chat-template prompt with tool declarations, history and an optional image.
+- Agent loop to tokenizer: the chat-template prompt with tool declarations and history.
+- Apps and agent loop to the vision projector: an attached image goes from the apps (console, desktop, server `image_url`) through the agent loop to the vision projector (`mmproj`), and the image embeddings enter the model graph.
 - Tool declarations to the grammar mask: the call grammar built from the declared schemas constrains sampling so a call names a real tool with typed arguments.
 - Sampler to agent loop: the token stream and the tool-call text.
 - Agent loop and the KV/prefix cache: session KV (and DeltaNet state) saved and restored, prefix reused by hash.
@@ -30,8 +32,8 @@ One line per arrow of the diagram.
 - Engine to hardware: quantized matvec, attention, DeltaNet and expert kernels on CPU, Vulkan or OpenCL (the language model does not run on CUDA).
 - Image engine to hardware: UNet, DiT and VAE kernels on CUDA, Vulkan or CPU.
 - Inside the UIOE: Interpret, Classify, Route, Retrieve, Orchestrate, Context Builder in that order; Orchestrate fans out to the connectors and their evidence returns to the Context Builder.
-- Inside the engine: tokenizer ids go to the model graph, the logits pass the grammar mask and then the sampler.
-- Into the model graph: the `.kspec` adapter (specialize), image embeddings (vision projector), cold-expert matvec on the CPU, expert slots in VRAM and the KV and DeltaNet state.
+- Inside the engine: the language model box (GGUF weights, Qwen3.6 or Gemma 4, run by the model graphs) takes the tokenizer ids and the weights from the GGUF loader; its logits pass the grammar mask and then the sampler. The "L1 language model" pill in the data-flow tracks is this box.
+- Into the model graph: the `.kspec` adapter (specialize), image embeddings (vision projector), cold-expert matvec on the CPU, expert slots in VRAM and the KV and DeltaNet state; the model graph output goes to the grammar mask and the sampler.
 - Hardware: the engine and the image engine both end in the L0 backends; the loader picks one at start and the CPU is always the fallback.
 
 ## Layers
@@ -127,7 +129,7 @@ One compilation unit (`src/katana.c`), GGUF in, tokens out, no external service.
 | Component | What it does and how it connects | Where | Status | Note |
 |---|---|---|---|---|
 | GGUF, tokenizers, chat templates | Weights, metadata, BPE and SentencePiece tokenizers and the template from the file. The SentencePiece encoder is now O(n log n) (linked list + pair heap, ties to the leftmost); `katana toktest <gguf>` runs golden cases and a round trip. | `src/engine/model.c`, `tokenizer.c`, `qwen35.c`, `qwen4exp.c`, `src/app/toktest.c` | **working** | Goldens and round trip on vocabulary only; SPM equivalence with the old version checked on synthetic text; not yet confirmed on a real `llama` GGUF. |
-| Model graphs | Dense, MoE, Qwen3.6 and Gemma 4 graphs on CPU, OpenCL and Vulkan; batched prompt with cooperative-matrix kernels. | `src/engine/forward.c`, `vk_*.c` | **working** | Throughput recorded in `docs/comparisons.md` (older measurements). |
+| Model graphs | Dense, MoE, Qwen3.6 and Gemma 4 graphs on CPU, OpenCL and Vulkan; batched prompt with cooperative-matrix kernels. This is the "Language model" box of the diagram. | `src/engine/forward.c`, `vk_*.c` | **working** | Throughput recorded in `docs/comparisons.md` (older measurements). |
 | Quantization kernels | Reads F32/F16/BF16, `Q*_0`, `Q*_K`, IQ4, MXFP4 from GGUF; integer products on quantized blocks (AVX2, AVX-512 VNNI). `katana qtest` checks them. | `src/engine/cpu_kernels.c`, `cpu_lowbit.c`, `qtest.c` | **working** | `qtest`, `selftest`. |
 | MoE expert cache | Attention stays in VRAM; hot experts take VRAM slots by heat, cold experts run on the CPU from the mapped file; a loader thread promotes experts that heat up; heat is saved between runs; `katana pack` writes experts in GPU layout. | `src/engine/vk_moe.c`, `expert_tier.c` | **working** | Measured earlier (`docs/comparisons.md`). |
 | Cold-expert kernels, predictive prefetch | 4-row `Q4_K`/`Q6_K` VNNI kernel, vectorized SiLU, aligned slices; a helper thread prefetches cold experts into the CPU cache while the GPU works, using an advance router (`KATANA_MOE_PREDICT`, `KATANA_MOE_ROWS/PF/ACT/ALIGN=0` turn off). | `src/engine/cpu_kernels.c`, `expert_pf.c` | **partial** | New; compiled, synthetic check in `moebench`, nothing measured on the model. |
