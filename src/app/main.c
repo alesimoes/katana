@@ -1268,6 +1268,7 @@ static int run_main(int argc, char **argv) {
         if (argc >= 4 && strcmp(argv[3], "--deep") == 0) return selftest_deep(&m, argc - 4, argv + 4);
         return selftest(&m);
     }
+    if (argc >= 3 && strcmp(argv[1], "toktest") == 0 && strcmp(argv[2], "--spm-synth") == 0) return tt_spm_synth();    /* SentencePiece sintetico (src/app/toktest.c) */
     if (argc >= 3 && strcmp(argv[1], "toktest") == 0 && (argc == 3 || strcmp(argv[3], "--root") == 0)) {    /* auditoria do tokenizador (src/app/toktest.c) */
         g_vocab_only = 1;
         Model m; memset(&m, 0, sizeof m);

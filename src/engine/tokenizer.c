@@ -515,9 +515,83 @@ static void encode_plain(const Tokenizer *tk, const uint8_t *s, int n, Ids *out)
 }
 
 /* SentencePiece: espacos viram U+2581; parte de um simbolo por caractere e funde, a cada
-   passo, o par vizinho cujo token resultante existe e tem a maior pontuacao. O que sobrar
-   fora do vocabulario sai como tokens de byte (<0xNN>). */
+   passo, o par vizinho cujo token resultante existe e tem a maior pontuacao (empate: o mais a esquerda).
+   O que sobrar fora do vocabulario sai como tokens de byte (<0xNN>).
+   Lista encadeada de simbolos + heap de pares: O(n log n). A versao quadratica fica abaixo como referencia do toktest. */
+typedef struct { float score; int pos, i, j, a, b; } SpmPar;
+
+static int spm_melhor(const SpmPar *x, const SpmPar *y) { return x->score > y->score || (x->score == y->score && x->pos < y->pos); }
+
+static void spm_sobe(SpmPar *h, int k) {
+    while (k > 0) {
+        const int p = (k - 1) / 2;
+        if (!spm_melhor(&h[k], &h[p])) break;
+        SpmPar t = h[k]; h[k] = h[p]; h[p] = t; k = p;
+    }
+}
+
+static void spm_desce(SpmPar *h, int n, int k) {
+    for (;;) {
+        int m = k, l = 2 * k + 1, r = l + 1;
+        if (l < n && spm_melhor(&h[l], &h[m])) m = l;
+        if (r < n && spm_melhor(&h[r], &h[m])) m = r;
+        if (m == k) break;
+        SpmPar t = h[k]; h[k] = h[m]; h[m] = t; k = m;
+    }
+}
+
 static void spm_encode(const Tokenizer *tk, const uint8_t *s, int n, Ids *out, int prefix) {
+    char *buf = xalloc((size_t)n * 3 + 4, 1);
+    int bl = 0, ns = 0;
+    if (prefix) { buf[bl++] = (char)0xE2; buf[bl++] = (char)0x96; buf[bl++] = (char)0x81; }
+    for (int i = 0; i < n; i++) {
+        if (s[i] == ' ') { buf[bl++] = (char)0xE2; buf[bl++] = (char)0x96; buf[bl++] = (char)0x81; }
+        else buf[bl++] = (char)s[i];
+    }
+    int *st = xalloc(bl + 1, sizeof(int)), *ln = xalloc(bl + 1, sizeof(int));
+    int *nx = xalloc(bl + 1, sizeof(int)), *pv = xalloc(bl + 1, sizeof(int));
+    char *vivo = xalloc(bl + 1, 1);
+    for (int i = 0; i < bl; ) {         /* um simbolo por caractere UTF-8 */
+        const uint8_t ch = (uint8_t)buf[i];
+        int l = ch < 0x80 ? 1 : ch < 0xE0 ? 2 : ch < 0xF0 ? 3 : 4;
+        if (i + l > bl) l = bl - i;
+        st[ns] = i; ln[ns] = l; ns++; i += l;
+    }
+    for (int i = 0; i < ns; i++) { nx[i] = i + 1 < ns ? i + 1 : -1; pv[i] = i - 1; vivo[i] = 1; }
+    SpmPar *h = xalloc((size_t)ns * 3 + 4, sizeof(SpmPar));
+    int nh = 0;
+    #define SPM_PAR(I_, J_) do { \
+        const int id_ = map_get(&tk->vocab, buf + st[I_], ln[I_] + ln[J_]); \
+        if (id_ >= 0) { h[nh] = (SpmPar){ tk->score[id_], st[I_], (I_), (J_), ln[I_], ln[J_] }; spm_sobe(h, nh++); } \
+    } while (0)
+    for (int i = 0; i + 1 < ns; i++) SPM_PAR(i, i + 1);
+    while (nh > 0) {
+        const SpmPar t = h[0];
+        h[0] = h[--nh]; spm_desce(h, nh, 0);
+        if (!vivo[t.i] || !vivo[t.j] || nx[t.i] != t.j || ln[t.i] != t.a || ln[t.j] != t.b) continue;     /* entrada velha */
+        ln[t.i] += ln[t.j]; vivo[t.j] = 0;
+        nx[t.i] = nx[t.j];
+        if (nx[t.j] >= 0) pv[nx[t.j]] = t.i;
+        if (pv[t.i] >= 0) SPM_PAR(pv[t.i], t.i);
+        if (nx[t.i] >= 0) SPM_PAR(t.i, nx[t.i]);
+        if (nh + 2 > ns * 3 + 4) die("spm: heap cheio");
+    }
+    #undef SPM_PAR
+    for (int i = 0; i >= 0 && i < ns; i = nx[i]) {
+        const int id = map_get(&tk->vocab, buf + st[i], ln[i]);
+        if (id >= 0) { ids_push(out, id); continue; }
+        for (int j = 0; j < ln[i]; j++) {
+            char bt[8];
+            snprintf(bt, sizeof bt, "<0x%02X>", (uint8_t)buf[st[i] + j]);
+            const int bid = map_get(&tk->vocab, bt, 6);
+            ids_push(out, bid >= 0 ? bid : 0);
+        }
+    }
+    free(buf); free(st); free(ln); free(nx); free(pv); free(vivo); free(h);
+}
+
+/* versao quadratica anterior: so a referencia do toktest */
+static void spm_encode_ref(const Tokenizer *tk, const uint8_t *s, int n, Ids *out, int prefix) {
     char *buf = xalloc((size_t)n * 3 + 4, 1);
     int bl = 0, ns = 0;
     if (prefix) { buf[bl++] = (char)0xE2; buf[bl++] = (char)0x96; buf[bl++] = (char)0x81; }
