@@ -329,7 +329,7 @@ Honest reading:
   by construction. `katana toktest --spm-synth` builds a synthetic vocabulary (256 byte tokens, ~6,000 random pieces with many tied scores, specials) and
   compares the new code with the old one (kept as `spm_encode_ref`) on ~7,500 random texts (0 to 45,000 bytes, with and without the space prefix; accents, CJK, emoji,
   unknown characters going through byte fallback): 0 id differences, round trip 0 failures, specials recognized. Time on a 50,000-character line:
-  0.011 s heap against 9.6 s old (~860x); 200,000 characters: 0.05 s heap (see handoff for the old one). Not checked: the real vocabularies of a `llama` model
+  0.011 s heap against 9.6 s old (~860x); 200,000 characters: 0.054 s heap against 179 s old (~3,300x; same ids; run with `KATANA_TOKTEST_SLOW=1`). Not checked: the real vocabularies of a `llama` model
   (real score distribution, `<unk>` handling, the dummy-prefix option), and agreement with the official SentencePiece ids, since no such model or library is here.
 - Fixed context of 4,096 tokens, KV cache allocated in full, no prefix reuse or shifting.
 - Sampling only with temperature and top-k.

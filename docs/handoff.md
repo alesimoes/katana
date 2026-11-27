@@ -46,7 +46,7 @@ Details in `knowledge.md` section 9.
 
 **2026-11-27, SentencePiece (`llama`) encoder (compiled; `katana toktest --spm-synth` run, vocabulary synthetic, no model, no inference).** `spm_encode` rewritten from O(n^2) to
 O(n log n) (symbol linked list + pair heap, ties to the leftmost); the old version stays as `spm_encode_ref` for the test. Same ids on ~7,500 random texts and on
-20k/50k-character lines. Open: confirm with a real `llama` GGUF (and official ids) when one is in `models/`.
+20k/50k/200k-character lines (200k: 0.05 s against 179 s). Open: confirm with a real `llama` GGUF (and official ids) when one is in `models/`.
 
 **2026-11-25, declared flows (`docs/flows.md`).** The engine now holds the state of the job per conversation: 13 playbooks as state
 machines in a table (`src/agent/flow.c`), a contract for each of the 40 tools, and one `[katana: next <flow> <i>/<n> <state>: ...]` line at the
