@@ -656,12 +656,14 @@ void Backend::refreshCatalog()
         for (const QByteArray &l : c->readAllStandardOutput().split('\n')) {
             const QList<QByteArray> f = l.split('\t');
             if (f.size() < 9) continue;
+            if (f.size() > 9 && f[9].trimmed() != "llm") continue;     // a tela de modelos lista so os LLMs; os extras vem do katana setup
             const QString id = QString::fromUtf8(f[0]);
             const double total = f[3].toDouble(), have = f[5].toDouble();
             v.append(QVariantMap{{"id", id}, {"name", QString::fromUtf8(f[1])}, {"file", QString::fromUtf8(f[2])},
                                  {"sizeText", gbText(total)}, {"state", QString::fromUtf8(f[4])},
                                  {"haveFraction", total > 0 ? have / total : 0.0}, {"fit", f[6].toInt()},
-                                 {"recommended", f[7].toInt() == 1}, {"note", catalogNote(id, QString::fromUtf8(f[8]).trimmed())}});
+                                 {"recommended", f[7].toInt() == 1}, {"note", catalogNote(id, QString::fromUtf8(f[8]).trimmed())},
+                                 {"kind", f.size() > 9 ? QString::fromUtf8(f[9]).trimmed() : QString("llm")}});
         }
         c->deleteLater();
         m_catalog = v;
