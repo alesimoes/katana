@@ -381,3 +381,7 @@ laptop GPU, and that is the only setup that is tested day to day.
 It is not a drop-in replacement for a mature, widely used inference stack: it supports the architectures listed above and not
 "every GGUF", the Windows paths are not compiled or tested here, and the agent runs commands on your machine without asking
 unless you turn confirmation on. Performance claims live in `docs/`, always with what was measured and what is an estimate.
+
+## License
+
+katana is released under the Apache License 2.0 (see `LICENSE`). Model files downloaded with `katana pull` keep their own licenses; each model card says which.

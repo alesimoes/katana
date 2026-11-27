@@ -193,7 +193,7 @@ def extra_corpus():
     root = os.path.abspath(os.path.join(HERE, "..", ".."))
     out = []
     for arq, passo, n in (("docs/knowledge.md", 400, 40), ("docs/handoff.md", 700, 40), ("docs/plan.md", 300, 25),
-                          ("docs/base-ia/nlp-e-llm.md", 900, 40), ("katana.c", 800, 60), ("tools/tokref/ref.py", 500, 20)):
+                          ("katana.c", 800, 60), ("tools/tokref/ref.py", 500, 20)):
         p = os.path.join(root, arq)
         if not os.path.exists(p):
             continue

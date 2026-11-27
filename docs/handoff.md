@@ -1446,7 +1446,7 @@ Went into main (details in the commits and in `docs/new-models.md`):
   XML tools format, `KATANA_THINK=0`. Interface: console and `katana serve` (local page).
 - Bench `tools/vkdelta`: Vulkan DeltaNet kernels (generation 0.025 ms/layer; batch 8.5x), not yet
   wired into the engine.
-- Studies: `docs/providers-study.md` and `docs/base-ia/`.
+- Studies: `docs/providers-study.md`.
 
 Measurements in this session are indicative (machine shared with another session compiling).
 Moonlight generation ~11 → 30–33 tok/s; Qwen3.6 ~25–27 tok/s (bench 16+48, alternating).

@@ -12,7 +12,7 @@ Sizes checked against the Hugging Face API (they match byte for byte). The files
 | `models/moonlight-16b-a3b-instruct-q4km.gguf` | 10,540,747,360 (9.82 GiB) | gabriellarson/Moonlight-16B-A3B-Instruct-GGUF (`...-Q4_K_M.gguf`) |
 
 Notes:
-- There is no DeepSeek-V2-Lite-Chat Q4_K_M in bartowski/lmstudio. The legraphista `Q4_K` is the
+- There is no DeepSeek-V2-Lite-Chat Q4_K_M in the community repositories. The legraphista `Q4_K` is the
   same scheme (Q4_K_M mix, `file_type = 15`) as the real Chat model, in 1 file.
 - DeepSeek-Coder-V2-Lite-Instruct (bartowski, same architecture) is an alternative, not downloaded.
 

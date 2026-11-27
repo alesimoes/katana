@@ -26,3 +26,7 @@ katana-dev2
 katana-dev3
 katana-vk
 dist/
+
+# binarios gerados e ferramentas de terceiros baixadas por script
+katana-cuda
+desktop-qt/packaging/tools/*.AppImage
