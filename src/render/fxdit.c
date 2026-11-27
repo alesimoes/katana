@@ -76,7 +76,11 @@ static void fxd_pack_job(void *cx, int j0, int j1) {
             const int rr = p * NR + r;
             if (rr >= j->rows) { for (int i = 0; i < c; i++) { if (oh) oh[(size_t)i * NR + r] = 0; else o[(size_t)i * NR + r] = 0.0f; } continue; }
             fxd_row(j->t, j->data, rr, c, row);
+#ifdef __F16C__
             if (oh) for (int i = 0; i < c; i++) oh[(size_t)i * NR + r] = _cvtss_sh(row[i], 0);
+#else
+            if (oh) for (int i = 0; i < c; i++) oh[(size_t)i * NR + r] = f32_to_f16(row[i]);    /* porte ARM, 2026-11-27: sem SIMD */
+#endif
             else for (int i = 0; i < c; i++) o[(size_t)i * NR + r] = row[i];
         }
     }
@@ -106,6 +110,7 @@ static const FxdWE *fxd_wget(const FxDit *F, const SdgInfo *t) {
 }
 
 /* nucleo com painel F16: igual ao do produto de vision/tensor.c, com b carregado como metades e convertido */
+#ifdef __AVX2__
 VT_512 VT_INL void fxd_k512h(const int mr, const float *a, size_t lda, const uint16_t *b, int k, float *c, size_t ldc, int add) {
     __m512 x[12], y[12];
 #pragma GCC unroll 12
@@ -158,6 +163,31 @@ static void fxd_kern256h(int mr, const float *a, size_t lda, const uint16_t *b, 
 #undef K
     }
 }
+#else
+/* sem AVX2 (porte para ARM/outras plataformas, 2026-11-27): mesma conta do nucleo com painel F16 (32 ou 16 colunas,
+   fp16 -> fp32 por f16_to_f32), uma coluna por vez, soma em ordem p = 0..k-1 igual ao laco vetorial. Mais lento,
+   nunca testado num celular; serve so para compilar e conferir a saida antes de ganhar uma versao NEON. */
+static void fxd_kern512h(int mr, const float *a, size_t lda, const uint16_t *b, int k, float *c, size_t ldc, int add) {
+    for (int i = 0; i < mr; i++) {
+        float *o = c + (size_t)i * ldc;
+        for (int j = 0; j < 32; j++) {
+            float s = add ? o[j] : 0.0f;
+            for (int p = 0; p < k; p++) s += a[(size_t)i * lda + p] * f16_to_f32(b[(size_t)p * 32 + j]);
+            o[j] = s;
+        }
+    }
+}
+static void fxd_kern256h(int mr, const float *a, size_t lda, const uint16_t *b, int k, float *c, size_t ldc, int add) {
+    for (int i = 0; i < mr; i++) {
+        float *o = c + (size_t)i * ldc;
+        for (int j = 0; j < 16; j++) {
+            float s = add ? o[j] : 0.0f;
+            for (int p = 0; p < k; p++) s += a[(size_t)i * lda + p] * f16_to_f32(b[(size_t)p * 16 + j]);
+            o[j] = s;
+        }
+    }
+}
+#endif
 /* C[n][m] = A[n][k] * paineis F16, so os paineis pa..pb-1 (colunas de C pa*NR em diante) */
 static void fxd_gemm_h(float *C, size_t ldc, const float *A, size_t lda, const uint16_t *B, int n, int k, int m, int pa, int pb) {
     const int wide = vt_wide(), NR = wide ? 32 : 16, MR = wide ? 12 : 6, KC = 512;

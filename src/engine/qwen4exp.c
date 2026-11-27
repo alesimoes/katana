@@ -253,6 +253,7 @@ static inline float q4_sig(float x) {
 static inline float q4_silu(float x) { return x * q4_sig(x); }
 
 /* ---- produtos em lote: cada linha e aberta uma vez e atende os B tokens ---- */
+#ifdef __AVX2__
 static float q4_dot_bf16(const uint8_t *row, const float *x, int n) {
     __m256 a0 = _mm256_setzero_ps(), a1 = _mm256_setzero_ps();
     int j = 0;
@@ -268,6 +269,14 @@ static float q4_dot_bf16(const uint8_t *row, const float *x, int n) {
     for (; j < n; j++) { uint16_t h; memcpy(&h, row + 2 * j, 2); s += bf16_to_f32(h) * x[j]; }
     return s;
 }
+#else
+/* sem AVX2 (porte ARM, 2026-11-27): mesmo somatorio (linha em BF16 contra x em fp32), sem SIMD. */
+static float q4_dot_bf16(const uint8_t *row, const float *x, int n) {
+    float s = 0.0f;
+    for (int j = 0; j < n; j++) { uint16_t h; memcpy(&h, row + 2 * j, 2); s += bf16_to_f32(h) * x[j]; }
+    return s;
+}
+#endif
 static void mm_prepare(XQ *xqs, const float *X, int B, int cols);
 #if HAVE_LOWBIT
 /* Q4_K, Q5_K e Q6_K abertos como nos tipos de poucos bits: 256 inteiros de 16 bits com a escala inteira do sub-bloco ja
@@ -928,7 +937,11 @@ static void q4_att_job(void *cx, int i0, int i1) {
             const float w = sc[i];
             const float *v = row;
             if (m->vq8) q8_get(row, m->vq8 + r / 32 * 34, hd);
+#ifdef __AVX2__
             else if (m->vh) { for (int k = 0; k < hd; k += 8) _mm256_storeu_ps(row + k, _mm256_cvtph_ps(_mm_loadu_si128((const __m128i *)(m->vh + r + k)))); }
+#else
+            else if (m->vh) { for (int k = 0; k < hd; k++) row[k] = f16_to_f32(m->vh[r + k]); }      /* porte ARM, 2026-11-27: sem SIMD */
+#endif
             else v = m->vcache + r;
             for (int k = 0; k < hd; k++) o[k] += w * v[k];
         }
@@ -972,10 +985,15 @@ static void q4_att_core(Model *m, int l, const float *Xb, const float *QG, float
         const float *v = V + (size_t)t * kvd;
         const size_t r = L->kv_off + (size_t)pos * kvd;
         if (m->kq8) { q8_put(m->kq8 + r / 32 * 34, k, kvd); q8_put(m->vq8 + r / 32 * 34, v, kvd); }
+#ifdef __AVX2__
         else if (m->kh) for (int i = 0; i < kvd; i += 8) {
             _mm_storeu_si128((__m128i *)(m->kh + r + i), _mm256_cvtps_ph(_mm256_loadu_ps(k + i), 0));
             _mm_storeu_si128((__m128i *)(m->vh + r + i), _mm256_cvtps_ph(_mm256_loadu_ps(v + i), 0));
-        } else { memcpy(m->kcache + r, k, kvd * sizeof(float)); memcpy(m->vcache + r, v, kvd * sizeof(float)); }
+        }
+#else
+        else if (m->kh) for (int i = 0; i < kvd; i++) { m->kh[r + i] = f32_to_f16(k[i]); m->vh[r + i] = f32_to_f16(v[i]); }      /* porte ARM, 2026-11-27: sem SIMD */
+#endif
+        else { memcpy(m->kcache + r, k, kvd * sizeof(float)); memcpy(m->vcache + r, v, kvd * sizeof(float)); }
         /* indice: soma as k cruas do bloco; bloco completo vira chave (media, norma, RoPE da primeira posicao) */
         float *acc = q->iacc + (size_t)Q->ia * ih;
         if (pos % q->ratio == 0) memset(acc, 0, ih * sizeof(float));

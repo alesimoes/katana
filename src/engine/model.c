@@ -209,6 +209,8 @@ static float f16_to_f32(uint16_t h) {
     return f;
 }
 
+static uint16_t f32_to_f16(float f);     /* src/app/main.c, mais abaixo no TU: f32 -> f16 sem SIMD, usada no porte ARM */
+
 /* tipos de tensor do GGUF */
 enum { T_F32 = 0, T_F16 = 1, T_Q4_0 = 2, T_Q4_1 = 3, T_Q5_0 = 6, T_Q5_1 = 7, T_Q8_0 = 8, T_Q2_K = 10, T_Q3_K = 11,
        T_Q4_K = 12, T_Q5_K = 13, T_Q6_K = 14, T_IQ2_XXS = 16, T_IQ2_XS = 17, T_IQ3_XXS = 18, T_IQ1_S = 19,

@@ -45,6 +45,7 @@ static int kv8_escolha(size_t ctx, uint64_t kv16, uint64_t weights) {
 }
 
 /* grava n valores (n multiplo de 32) em blocos Q8_0: escala fp16 = max|x|/127 e 32 x int8 */
+#ifdef __AVX2__
 static void q8_put(uint8_t *dst, const float *x, int n) {
     for (int b = 0; b < n / 32; b++, dst += 34, x += 32) {
         __m256 am = _mm256_setzero_ps();
@@ -61,8 +62,24 @@ static void q8_put(uint8_t *dst, const float *x, int n) {
         for (int i = 0; i < 32; i++) { const int v = (int)lrintf(x[i] * id); q[i] = (int8_t)(v > 127 ? 127 : v < -127 ? -127 : v); }
     }
 }
+#else
+/* porte ARM, 2026-11-27: sem SIMD */
+static void q8_put(uint8_t *dst, const float *x, int n) {
+    for (int b = 0; b < n / 32; b++, dst += 34, x += 32) {
+        float amax = 0.0f;
+        for (int i = 0; i < 32; i++) { const float a = fabsf(x[i]); if (a > amax) amax = a; }
+        const float d = amax / 127.0f;
+        const uint16_t h = f32_to_f16(d);
+        memcpy(dst, &h, 2);
+        const float id = d > 0.0f ? 1.0f / d : 0.0f;
+        int8_t *q = (int8_t *)(dst + 2);
+        for (int i = 0; i < 32; i++) { const int v = (int)lrintf(x[i] * id); q[i] = (int8_t)(v > 127 ? 127 : v < -127 ? -127 : v); }
+    }
+}
+#endif
 
 /* abre n valores (n multiplo de 32) de blocos Q8_0 em float */
+#ifdef __AVX2__
 static void q8_get(float *out, const uint8_t *src, int n) {
     for (int b = 0; b < n / 32; b++, src += 34, out += 32) {
         uint16_t h; memcpy(&h, src, 2);
@@ -72,6 +89,17 @@ static void q8_get(float *out, const uint8_t *src, int n) {
             _mm256_storeu_ps(out + i, _mm256_mul_ps(d, _mm256_cvtepi32_ps(_mm256_cvtepi8_epi32(_mm_loadl_epi64((const __m128i *)(qs + i))))));
     }
 }
+#else
+/* porte ARM, 2026-11-27: sem SIMD */
+static void q8_get(float *out, const uint8_t *src, int n) {
+    for (int b = 0; b < n / 32; b++, src += 34, out += 32) {
+        uint16_t h; memcpy(&h, src, 2);
+        const float d = f16_to_f32(h);
+        const int8_t *qs = (const int8_t *)(src + 2);
+        for (int i = 0; i < 32; i++) out[i] = d * qs[i];
+    }
+}
+#endif
 
 /* produto de uma linha Q8_0 (blocos: f16 escala + 32 x int8) por um vetor float */
 static float dot_q8(const uint8_t *row, const float *x, int cols) {

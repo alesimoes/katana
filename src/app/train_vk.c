@@ -119,6 +119,7 @@ static int tv_shape(const TPar *p) {
 /* copia e normalizacao no pool: entradas em fp16 gravadas direto na VRAM */
 typedef struct { TvSlot *s; int K, v; const TvJob *jb; const int *v0; int bad; } TvX;
 #define TV_TMP 16384
+#ifdef __AVX2__
 static void tv_x_job(void *c, int a, int b) {
     TvX *t = (TvX *)c;
     uint16_t hb[TV_TMP], lb[TV_TMP];
@@ -149,6 +150,41 @@ static void tv_x_job(void *c, int a, int b) {
         memcpy(t->s->x.m + (vi + t->v + 64) * t->K * 2, lb, (size_t)t->K * 2);
     }
 }
+#else
+/* porte ARM, 2026-11-27: sem SIMD; mesma normalizacao e divisao em duas partes fp16, um valor por vez */
+static void tv_x_job(void *c, int a, int b) {
+    TvX *t = (TvX *)c;
+    uint16_t hb[TV_TMP], lb[TV_TMP];
+    for (int i = a; i < b; i++) for (int n = 0; n < t->jb[i].n; n++) {
+        const float *x = t->jb[i].in + (size_t)n * t->K;
+        const size_t vi = (size_t)t->v0[i] + n;
+        float m = 0.0f;
+        int bad = 0;
+        for (int k = 0; k < t->K; k++) {
+            uint32_t u; memcpy(&u, &x[k], 4);
+            if ((u & 0x7f800000u) == 0x7f800000u) bad = 1;      /* nao finito (inf ou nan): olha os bits */
+            const float a2 = fabsf(x[k]);
+            if (a2 > m) m = a2;
+        }
+        if (bad) { t->bad = 1; return; }
+        int e = 0; if (m > 0) frexpf(m, &e);
+        e = e < -100 ? -100 : e > 100 ? 100 : e;
+        const float sc = ldexpf(1.0f, 12 - e);
+        t->s->us[vi] = 1.0f / sc;
+        /* parte alta (mantissa cortada em 10 bits, exata em fp16) e o resto vezes 2048, tambem em fp16 */
+        for (int k = 0; k < t->K; k++) {
+            const float v = x[k] * sc;
+            uint32_t uv; memcpy(&uv, &v, 4);
+            uv &= 0xFFFFE000u;
+            float h; memcpy(&h, &uv, 4);
+            hb[k] = f32_to_f16(h);
+            lb[k] = f32_to_f16((v - h) * 2048.0f);
+        }
+        memcpy(t->s->x.m + vi * t->K * 2, hb, (size_t)t->K * 2);
+        memcpy(t->s->x.m + (vi + t->v + 64) * t->K * 2, lb, (size_t)t->K * 2);
+    }
+}
+#endif
 /* pesos que nao moram na VRAM: pedacos de 64 KB direto na VRAM */
 typedef struct { const uint8_t *src; char *dst; size_t n; } TvCp;
 static void tv_cp_job(void *c, int a, int b) { const TvCp *t = (const TvCp *)c; for (int i = a; i < b; i++) memcpy(t[i].dst, t[i].src, t[i].n); }

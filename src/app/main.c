@@ -901,7 +901,11 @@ static int merge_cmd(const char *in, const char *spec, const char *out) {
         }
         uint8_t *o = xalloc(ob, 1);
         if (otype[i] == T_F32) memcpy(o, x, n * 4);
+#ifdef __F16C__
         else if (otype[i] == T_F16) { uint16_t *h = (uint16_t *)o; for (size_t q = 0; q < n; q++) h[q] = _cvtss_sh(x[q], 0); }
+#else
+        else if (otype[i] == T_F16) { uint16_t *h = (uint16_t *)o; for (size_t q = 0; q < n; q++) h[q] = f32_to_f16(x[q]); }      /* porte ARM, 2026-11-27 */
+#endif
         else enc_block(otype[i], x, o, n);
         fwrite(o, 1, ob, f);
         free(o); free(x);

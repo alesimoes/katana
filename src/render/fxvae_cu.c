@@ -48,7 +48,11 @@ static FxcvConv *fxcv_conv(const SdgFile *g, const char *base) {
             for (int ky = 0; ky < k; ky++)
                 for (int kx = 0; kx < k; kx++) {
                     const size_t si = (((size_t)o * cin + i) * k + ky) * k + kx, di = (size_t)o * K + ((size_t)ky * k + kx) * cin + i;
+#ifdef __F16C__
                     h[di] = w->type == 0 ? ((const float *)src)[si] : _cvtsh_ss(((const uint16_t *)src)[si]);
+#else
+                    h[di] = w->type == 0 ? ((const float *)src)[si] : f16_to_f32(((const uint16_t *)src)[si]);    /* porte ARM, 2026-11-27: sem SIMD */
+#endif
                 }
     snprintf(nm, sizeof nm, "%s.bias", base);
     const SdgInfo *b = sdg_find(g, nm);

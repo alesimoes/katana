@@ -25,6 +25,7 @@ static float *tk_accbuf(size_t n) {
 }
 
 /* ---- desquantizacao SIMD (AVX2) dos formatos que os modelos usam; o resto cai em dequant() ---- */
+#ifdef __AVX2__
 static inline __m256 tk_u8f(__m128i b) { return _mm256_cvtepi32_ps(_mm256_cvtepu8_epi32(b)); }
 
 static void tk_dq_q8_0(const uint8_t *src, float *out, size_t nb) {
@@ -122,6 +123,81 @@ static void tk_dq_q5_1(const uint8_t *src, float *out, size_t nb) {
         }
     }
 }
+#else
+/* porte ARM, 2026-11-27: sem SIMD; mesma matematica dos blocos acima, um valor por vez */
+static void tk_dq_q8_0(const uint8_t *src, float *out, size_t nb) {
+    for (size_t b = 0; b < nb; b++, src += 34, out += 32) {
+        const float d = h2f(src);
+        const int8_t *qs = (const int8_t *)(src + 2);
+        for (int j = 0; j < 32; j++) out[j] = d * qs[j];
+    }
+}
+
+static void tk_dq_q4k(const uint8_t *src, float *out, size_t nb) {
+    for (size_t b = 0; b < nb; b++, src += 144) {
+        const float d = h2f(src), dmin = h2f(src + 2);
+        const uint8_t *sc = src + 4, *q = src + 16;
+        for (int j = 0; j < 8; j += 2, q += 32, out += 64) {
+            int s1, m1, s2, m2;
+            k4_scale_min(j, sc, &s1, &m1); k4_scale_min(j + 1, sc, &s2, &m2);
+            const float d1 = d * s1, n1 = dmin * m1, d2 = d * s2, n2 = dmin * m2;
+            for (int l = 0; l < 32; l++) {
+                out[l] = (q[l] & 0xF) * d1 - n1;
+                out[32 + l] = (q[l] >> 4) * d2 - n2;
+            }
+        }
+    }
+}
+
+static void tk_dq_q5k(const uint8_t *src, float *out, size_t nb) {
+    for (size_t b = 0; b < nb; b++, src += 176) {
+        const float d = h2f(src), dmin = h2f(src + 2);
+        const uint8_t *sc = src + 4, *qh = src + 16, *q = src + 48;
+        for (int j = 0; j < 8; j += 2, q += 32, out += 64) {
+            int s1, m1, s2, m2;
+            k4_scale_min(j, sc, &s1, &m1); k4_scale_min(j + 1, sc, &s2, &m2);
+            const float d1 = d * s1, n1 = dmin * m1, d2 = d * s2, n2 = dmin * m2;
+            for (int l = 0; l < 32; l++) {
+                out[l] = ((q[l] & 0xF) | (((qh[l] >> j) & 1) << 4)) * d1 - n1;
+                out[32 + l] = ((q[l] >> 4) | (((qh[l] >> (j + 1)) & 1) << 4)) * d2 - n2;
+            }
+        }
+    }
+}
+
+static void tk_dq_q6k(const uint8_t *src, float *out, size_t nb) {
+    for (size_t b = 0; b < nb; b++, src += 210) {
+        const uint8_t *ql = src, *qh = src + 128;
+        const int8_t *sc = (const int8_t *)(src + 192);
+        const float d = h2f(src + 208);
+        for (int c = 0; c < 2; c++, out += 128, ql += 64, qh += 32, sc += 8) {
+            for (int l = 0; l < 32; l++) {
+                const int is = l / 16;
+                const int q1 = (int)((ql[l] & 0xF) | ((qh[l] & 3) << 4)) - 32;
+                const int q2 = (int)((ql[l + 32] & 0xF) | (((qh[l] >> 2) & 3) << 4)) - 32;
+                const int q3 = (int)((ql[l] >> 4) | (((qh[l] >> 4) & 3) << 4)) - 32;
+                const int q4 = (int)((ql[l + 32] >> 4) | (((qh[l] >> 6) & 3) << 4)) - 32;
+                out[l] = d * sc[is] * q1;
+                out[l + 32] = d * sc[is + 2] * q2;
+                out[l + 64] = d * sc[is + 4] * q3;
+                out[l + 96] = d * sc[is + 6] * q4;
+            }
+        }
+    }
+}
+
+static void tk_dq_q5_1(const uint8_t *src, float *out, size_t nb) {
+    for (size_t b = 0; b < nb; b++, src += 24, out += 32) {
+        const float d = h2f(src), m = h2f(src + 2);
+        uint32_t qh; memcpy(&qh, src + 4, 4);
+        const uint8_t *qs = src + 8;
+        for (int j = 0; j < 16; j++) {
+            out[j] = (int)((qs[j] & 0xF) | (((qh >> j) & 1) << 4)) * d + m;
+            out[j + 16] = (int)((qs[j] >> 4) | (((qh >> (j + 16)) & 1) << 4)) * d + m;
+        }
+    }
+}
+#endif
 
 /* n valores de uma linha quantizada -> float */
 static void tk_dequant(uint32_t type, const uint8_t *src, float *out, size_t n) {
@@ -148,6 +224,7 @@ static void tk_rows(const TPar *p, size_t r0, int n, float *buf, const float **p
     }
 }
 
+#ifdef __AVX2__
 static inline float tk_hsum(__m256 v) {
     __m128 lo = _mm_add_ps(_mm256_castps256_ps128(v), _mm256_extractf128_ps(v, 1));
     lo = _mm_hadd_ps(lo, lo); lo = _mm_hadd_ps(lo, lo);
@@ -174,6 +251,16 @@ static inline __attribute__((always_inline)) void tk_mv_tile(const float *const 
         out[(size_t)t * R + r + i] = s;
     }
 }
+#else
+/* porte ARM, 2026-11-27: sem SIMD; 4 linhas x NB tokens, mesma soma do caminho AVX2 */
+static inline __attribute__((always_inline)) void tk_mv_tile(const float *const *w, const float *x, size_t C, size_t R, float *out, size_t r, const int NB) {
+    for (int i = 0; i < 4; i++) for (int t = 0; t < NB; t++) {
+        float s = 0.0f;
+        for (size_t k = 0; k < C; k++) s += w[i][k] * x[(size_t)t * C + k];
+        out[(size_t)t * R + r + i] = s;
+    }
+}
+#endif
 
 typedef struct { const TPar *p; float *out; const float *x; int B; } TkMvJob;
 static void tk_mv_job(void *ctx, int r0, int r1) {
@@ -207,6 +294,7 @@ static void tk_mv(const TPar *p, float *out, const float *x, int B) {
 typedef struct { const TPar *p; const float *dy; float *acc; int B, chunk; } TkMtJob;
 
 /* NB tokens x 16 colunas, sobre nr linhas desquantizadas (wt[r] aponta a linha, com 16 colunas a partir de c) */
+#ifdef __AVX2__
 static inline __attribute__((always_inline)) void tk_mt_tile(const float *const *wt, int nr, size_t c, const float *dy, size_t R, size_t r0,
                                                             float *acc, size_t C, const int NB) {
     __m256 a0[4], a1[4];
@@ -220,6 +308,21 @@ static inline __attribute__((always_inline)) void tk_mt_tile(const float *const 
     }
     for (int t = 0; t < NB; t++) { _mm256_storeu_ps(acc + (size_t)t * C + c, a0[t]); _mm256_storeu_ps(acc + (size_t)t * C + c + 8, a1[t]); }
 }
+#else
+/* porte ARM, 2026-11-27: sem SIMD; mesma ordem de soma (por coluna, somando as nr linhas) */
+static inline __attribute__((always_inline)) void tk_mt_tile(const float *const *wt, int nr, size_t c, const float *dy, size_t R, size_t r0,
+                                                            float *acc, size_t C, const int NB) {
+    for (int t = 0; t < NB; t++) {
+        float *a = acc + (size_t)t * C + c;
+        const float *dyt = dy + (size_t)t * R + r0;
+        for (int k = 0; k < 16; k++) {
+            float s = a[k];
+            for (int i = 0; i < nr; i++) s += dyt[i] * wt[i][c + k];
+            a[k] = s;
+        }
+    }
+}
+#endif
 
 static void tk_mt_job(void *ctx, int r0, int r1) {
     const TkMtJob *j = (const TkMtJob *)ctx;
@@ -285,6 +388,7 @@ static void tk_g_job(void *ctx, int r0, int r1) {
             const float a0 = j->dy[(size_t)b * R + r], a1 = j->dy[(size_t)(b + 1) * R + r], a2 = j->dy[(size_t)(b + 2) * R + r], a3 = j->dy[(size_t)(b + 3) * R + r];
             if (a0 == 0.0f && a1 == 0.0f && a2 == 0.0f && a3 == 0.0f) continue;
             const float *x0 = j->x + (size_t)b * C, *x1 = x0 + C, *x2 = x1 + C, *x3 = x2 + C;
+#ifdef __AVX2__
             const __m256 v0 = _mm256_set1_ps(a0), v1 = _mm256_set1_ps(a1), v2 = _mm256_set1_ps(a2), v3 = _mm256_set1_ps(a3);
             size_t c = 0;
             for (; c + 8 <= C; c += 8) {
@@ -294,6 +398,10 @@ static void tk_g_job(void *ctx, int r0, int r1) {
                 _mm256_storeu_ps(g + c, s);
             }
             for (; c < C; c++) g[c] += a0 * x0[c] + a1 * x1[c] + a2 * x2[c] + a3 * x3[c];
+#else
+            /* porte ARM, 2026-11-27: sem SIMD */
+            for (size_t c = 0; c < C; c++) g[c] += a0 * x0[c] + a1 * x1[c] + a2 * x2[c] + a3 * x3[c];
+#endif
         }
         for (; b < j->B; b++) {
             const float a = j->dy[(size_t)b * R + r];

@@ -43,6 +43,7 @@ static void ab_old_job(void *cx, int j0, int j1) {
                 const size_t r = off + (size_t)(t0 + i) * kvd + kvh;
                 if (m->vq8) {       /* Q8_0: soma direto dos inteiros, escala do bloco dobrada no peso */
                     const uint8_t *vb = m->vq8 + r / 32 * 34;
+#ifdef __AVX2__
                     for (int k = 0; k < hd; k += 32, vb += 34) {
                         uint16_t h; memcpy(&h, vb, 2);
                         const float dv = _mm_cvtss_f32(_mm_cvtph_ps(_mm_cvtsi32_si128(h)));
@@ -54,13 +55,34 @@ static void ab_old_job(void *cx, int j0, int j1) {
                             for (int e = 0; e < 4; e++) _mm256_storeu_ps(ou + 8 * e, _mm256_fmadd_ps(w, q4[e], _mm256_loadu_ps(ou + 8 * e)));
                         }
                     }
+#else
+                    /* porte ARM, 2026-11-27: sem SIMD */
+                    for (int k = 0; k < hd; k += 32, vb += 34) {
+                        uint16_t h; memcpy(&h, vb, 2);
+                        const float dv = f16_to_f32(h);
+                        const int8_t *qv = (const int8_t *)(vb + 2);
+                        for (int u = 0; u < G; u++) {
+                            const float w = sc[u][i] * dv;
+                            float *ou = o[u] + k;
+                            for (int e = 0; e < 32; e++) ou[e] += w * qv[e];
+                        }
+                    }
+#endif
                     continue;
                 }
+#ifdef __AVX2__
                 for (int k = 0; k < hd; k += 8) {
                     const __m256 vv = m->vh ? _mm256_cvtph_ps(_mm_loadu_si128((const __m128i *)(m->vh + r + k))) : _mm256_loadu_ps(m->vcache + r + k);
                     for (int u = 0; u < G; u++)
                         _mm256_storeu_ps(o[u] + k, _mm256_fmadd_ps(_mm256_set1_ps(sc[u][i]), vv, _mm256_loadu_ps(o[u] + k)));
                 }
+#else
+                /* porte ARM, 2026-11-27: sem SIMD */
+                for (int k = 0; k < hd; k++) {
+                    const float vv = m->vh ? f16_to_f32(m->vh[r + k]) : m->vcache[r + k];
+                    for (int u = 0; u < G; u++) o[u][k] += sc[u][i] * vv;
+                }
+#endif
             }
         }
         for (int u = 0; u < G; u++) {   /* parcial: [maximo, soma, saida] por (cabeca q, pedaco) */
@@ -152,6 +174,7 @@ static void ab_old_n_job(void *cx, int j0, int j1) {
                 for (int i = 0; i < nb; i++) {
                     const size_t r = off + (size_t)(b0 + i) * kvd + kvh;
                     if (m->vq8) q8_get(kr, m->vq8 + r / 32 * 34, hd);
+#ifdef __AVX2__
                     for (int k = 0; k < hd; k += 8) {
                         const __m256 vv = m->vq8 ? _mm256_loadu_ps(kr + k) : m->vh ? _mm256_cvtph_ps(_mm_loadu_si128((const __m128i *)(m->vh + r + k))) : _mm256_loadu_ps(m->vcache + r + k);
                         for (int u = 0; u < G; u++) {
@@ -160,6 +183,17 @@ static void ab_old_n_job(void *cx, int j0, int j1) {
                             _mm256_storeu_ps(o + k, _mm256_fmadd_ps(_mm256_set1_ps(scb[(size_t)qi * 64 + i]), vv, _mm256_loadu_ps(o + k)));
                         }
                     }
+#else
+                    /* porte ARM, 2026-11-27: sem SIMD */
+                    for (int k = 0; k < hd; k++) {
+                        const float vv = m->vq8 ? kr[k] : m->vh ? f16_to_f32(m->vh[r + k]) : m->vcache[r + k];
+                        for (int u = 0; u < G; u++) {
+                            const int qi = (t - t0q) * G + u;
+                            float *o = ob + (size_t)qi * 512;
+                            o[k] += scb[(size_t)qi * 64 + i] * vv;
+                        }
+                    }
+#endif
                 }
             }
         }
@@ -235,7 +269,12 @@ static int attbench(int argc, char **argv) {
         for (int k = 0; k < 512; k++) { r = r * 1664525u + 1013904223u; row[k] = ((int)(r >> 16) - 32768) * (w ? 1e-4f : 2e-5f); }
         if (q8) { q8_put((w ? m->vq8 : m->kq8) + i / 32 * 34, row, 512); continue; }
         uint16_t *d = (w ? m->vh : m->kh) + i;
+#ifdef __AVX2__
         for (int k = 0; k < 512; k += 8) _mm_storeu_si128((__m128i *)(d + k), _mm256_cvtps_ph(_mm256_loadu_ps(row + k), 0));
+#else
+        /* porte ARM, 2026-11-27: sem SIMD */
+        for (int k = 0; k < 512; k++) d[k] = f32_to_f16(row[k]);
+#endif
     }
     for (int l = 0; l < NL; l++) L[l].kv_off = (size_t)l * c->ctx * kvd;
     float *Q = xalloc((size_t)64 * qd, 4), *G = xalloc((size_t)64 * 2 * qd, 4), *A = xalloc((size_t)64 * qd, 4), *B = xalloc((size_t)64 * qd, 4);

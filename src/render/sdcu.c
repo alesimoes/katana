@@ -63,7 +63,14 @@ static void scu_ro_job(void *cx, int o0, int o1) {      /* linhas o0..o1 de uma 
                 for (int kx = 0; kx < K; kx++) {
                     const uint8_t *s = j->src + ((((size_t)o * cin + i) * K + ky) * K + kx) * es;
                     uint16_t v;
-                    if (j->type == 0) { float f; memcpy(&f, s, 4); v = _cvtss_sh(f, 0); } else memcpy(&v, s, 2);
+                    if (j->type == 0) {
+                        float f; memcpy(&f, s, 4);
+#ifdef __F16C__
+                        v = _cvtss_sh(f, 0);
+#else
+                        v = f32_to_f16(f);    /* porte ARM, 2026-11-27: sem SIMD */
+#endif
+                    } else memcpy(&v, s, 2);
                     d[((size_t)ky * K + kx) * cin + i] = v;
                 }
     }

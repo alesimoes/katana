@@ -273,7 +273,11 @@ typedef LONG atom_t;
 #define ATOM_DEC(p) __sync_sub_and_fetch(p, 1)
 #define ATOM_XADD(p, v) __sync_fetch_and_add(p, v)
 #define ATOM_SET(p, v) __sync_lock_test_and_set(p, v)
+#if defined(__x86_64__) || defined(__i386__)
 #define CPU_RELAX() __builtin_ia32_pause()
+#else
+#define CPU_RELAX() ((void)0)      /* porte ARM, 2026-11-27: so um espera ocupada, sem instrucao equivalente obrigatoria */
+#endif
 typedef long atom_t;
 #endif
 

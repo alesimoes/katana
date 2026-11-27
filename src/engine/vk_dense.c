@@ -1039,7 +1039,9 @@ static int32_t gread(clh buf, size_t bytes, void *dst) {
     int32_t st = 1;
     while (st > 0) {
         if (cl.GetEventInfo(ev, 0x11D3 /* COMMAND_EXECUTION_STATUS */, sizeof st, &st, NULL) != 0) { st = -1; break; }
+#if defined(__x86_64__) || defined(__i386__)
         if (st > 0) _mm_pause();
+#endif
     }
     cl.ReleaseEvent(ev);
     return st < 0 ? st : 0;

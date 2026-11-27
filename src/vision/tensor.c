@@ -35,6 +35,7 @@ static void vt_free(void *p) {
 /* ---- nucleo: C[mr][NR] (+)= A[mr][k] * painel[k][NR] ---- */
 #define VT_INL static inline __attribute__((always_inline))
 #define VT_512 __attribute__((target("avx512f,avx512bw,avx512vl,avx512dq,fma")))
+#ifdef __AVX2__
 VT_512 VT_INL void vt_k512(const int mr, const float *a, size_t lda, const float *b, int k, float *c, size_t ldc, int add) {
     __m512 x[12], y[12];
 #pragma GCC unroll 12
@@ -87,6 +88,33 @@ static void vt_kern256(int mr, const float *a, size_t lda, const float *b, int k
 #undef K
     }
 }
+#else
+/* porte ARM, 2026-11-27: sem SIMD. Mesma conta de vt_k512/vt_kern512 (painel de 32 colunas), um escalar por vez;
+   nao precisa do helper vt_k512 (so existia para desenrolar os registros do AVX-512). Mais lento, nunca testado
+   num celular; serve so para compilar e conferir a saida contra a versao AVX2/AVX-512 (katana selftest) antes de
+   ganhar uma versao NEON. */
+static void vt_kern512(int mr, const float *a, size_t lda, const float *b, int k, float *c, size_t ldc, int add) {
+    for (int i = 0; i < mr; i++) {
+        float *o = c + (size_t)i * ldc;
+        for (int j = 0; j < 32; j++) {
+            float s = add ? o[j] : 0.0f;
+            for (int p = 0; p < k; p++) s += a[(size_t)i * lda + p] * b[(size_t)p * 32 + j];
+            o[j] = s;
+        }
+    }
+}
+/* porte ARM, 2026-11-27: sem SIMD. Mesma conta de vt_k256/vt_kern256 (painel de 16 colunas). */
+static void vt_kern256(int mr, const float *a, size_t lda, const float *b, int k, float *c, size_t ldc, int add) {
+    for (int i = 0; i < mr; i++) {
+        float *o = c + (size_t)i * ldc;
+        for (int j = 0; j < 16; j++) {
+            float s = add ? o[j] : 0.0f;
+            for (int p = 0; p < k; p++) s += a[(size_t)i * lda + p] * b[(size_t)p * 16 + j];
+            o[j] = s;
+        }
+    }
+}
+#endif
 /* C[n][m] = A[n][k] * B, com B ja em paineis de NR colunas (B[painel][k][NR], completado com zeros) */
 static void vt_gemm_packed(float *C, size_t ldc, const float *A, size_t lda, const float *B, int n, int k, int m) {
     const int wide = vt_wide(), NR = wide ? 32 : 16, MR = wide ? 12 : 6, KC = 512;
@@ -117,8 +145,13 @@ static void vt_row(const VtMat *W, int r, float *out) {
     if (W->type == VT_F32) { memcpy(out, (const char *)W->p + (size_t)r * c * 4, (size_t)c * 4); return; }
     const uint16_t *h = (const uint16_t *)W->p + (size_t)r * c;
     int i = 0;
+#ifdef __AVX2__
     for (; i + 8 <= c; i += 8) _mm256_storeu_ps(out + i, _mm256_cvtph_ps(_mm_loadu_si128((const __m128i *)(h + i))));
     for (; i < c; i++) out[i] = _cvtsh_ss(h[i]);
+#else
+    /* porte ARM, 2026-11-27: sem SIMD; f16_to_f32 ja existe em src/engine/model.c (mesma conta, sem F16C) */
+    for (; i < c; i++) out[i] = f16_to_f32(h[i]);
+#endif
 }
 /* paineis de um peso: NR linhas de W viram um painel [cols][NR] */
 typedef struct { const VtMat *W; float *B; int NR; } VtPackJob;
@@ -182,7 +215,10 @@ static void vt_layernorm(float *Y, const float *X, int n, int d, const float *g,
     pool_for(vt_norm_job, &j, n, 32);
 }
 
-/* ---- exponencial vetorial (reducao por ln2 e polinomio de grau 6; erro relativo ~1e-7) ---- */
+/* ---- exponencial vetorial (reducao por ln2 e polinomio de grau 6; erro relativo ~1e-7) ----
+   So chamada dentro de trechos ja protegidos por __AVX2__ (vt_softmax, vt_gelu_job); sem AVX2 esses
+   trechos usam expf/tanhf direto, entao vt_exp8 nem precisa existir fora do x86 (porte ARM, 2026-11-27). */
+#ifdef __AVX2__
 static inline __m256 vt_exp8(__m256 x) {
     x = _mm256_min_ps(_mm256_max_ps(x, _mm256_set1_ps(-87.0f)), _mm256_set1_ps(88.0f));
     const __m256 k = _mm256_round_ps(_mm256_mul_ps(x, _mm256_set1_ps(1.44269504f)), _MM_FROUND_TO_NEAREST_INT | _MM_FROUND_NO_EXC);
@@ -194,6 +230,8 @@ static inline __m256 vt_exp8(__m256 x) {
     p = _mm256_fmadd_ps(p, r, _mm256_set1_ps(1.0f)); p = _mm256_fmadd_ps(p, r, _mm256_set1_ps(1.0f));
     return _mm256_mul_ps(p, _mm256_castsi256_ps(_mm256_slli_epi32(_mm256_add_epi32(_mm256_cvtps_epi32(k), _mm256_set1_epi32(127)), 23)));
 }
+#endif
+#ifdef __AVX2__
 VT_512 static void vt_softmax512(float *x, int n) {
     __m512 mx = _mm512_set1_ps(-3.0e38f), sum = _mm512_setzero_ps();
     int i = 0;
@@ -221,14 +259,30 @@ VT_512 static void vt_softmax512(float *x, int n) {
         _mm512_mask_storeu_ps(x + i, k16, _mm512_mul_ps(_mm512_maskz_loadu_ps(k16, x + i), inv));
     }
 }
+#else
+/* porte ARM, 2026-11-27: sem SIMD. Mesmo softmax (maximo, exp deslocado, soma, normaliza) de vt_softmax512;
+   nunca chamado de fato aqui porque vt_wide() depende de qn_512(), que e sempre falso sem AVX-512. */
+static void vt_softmax512(float *x, int n) {
+    float mx = x[0];
+    for (int i = 1; i < n; i++) if (x[i] > mx) mx = x[i];
+    float sum = 0.0f;
+    for (int i = 0; i < n; i++) { x[i] = expf(x[i] - mx); sum += x[i]; }
+    const float inv = 1.0f / sum;
+    for (int i = 0; i < n; i++) x[i] *= inv;
+}
+#endif
 static void vt_softmax(float *x, int n) {
     if (vt_wide()) { vt_softmax512(x, n); return; }
     float mx = x[0], sum = 0.0f; int i;
     for (i = 1; i < n; i++) if (x[i] > mx) mx = x[i];
+#ifdef __AVX2__
     __m256 s = _mm256_setzero_ps(); const __m256 top = _mm256_set1_ps(mx);
     for (i = 0; i + 8 <= n; i += 8) { const __m256 e = vt_exp8(_mm256_sub_ps(_mm256_loadu_ps(x + i), top)); s = _mm256_add_ps(s, e); _mm256_storeu_ps(x + i, e); }
     float t[8]; _mm256_storeu_ps(t, s);
     for (int k = 0; k < 8; k++) sum += t[k];
+#else
+    /* porte ARM, 2026-11-27: sem SIMD; o laco escalar abaixo (que ja existia para a sobra) cobre o intervalo inteiro */
+#endif
     for (; i < n; i++) { x[i] = expf(x[i] - mx); sum += x[i]; }
     const float inv = 1.0f / sum;
     for (i = 0; i < n; i++) x[i] *= inv;
@@ -242,12 +296,16 @@ static void vt_gelu_job(void *cx, int r0, int r1) {
     const size_t n = (size_t)(r1 - r0) * j->per;
     if (j->exact) { for (size_t i = 0; i < n; i++) x[i] = 0.5f * x[i] * (1.0f + erff(x[i] * 0.70710678118654752f)); return; }
     size_t i = 0;
+#ifdef __AVX2__
     const __m256 a = _mm256_set1_ps(0.79788456080286535588f), c3 = _mm256_set1_ps(0.044715f), one = _mm256_set1_ps(1.0f);
     for (; i + 8 <= n; i += 8) {      /* 0,5 x (1 + tanh u) = x / (1 + e^(-2u)) */
         const __m256 v = _mm256_loadu_ps(x + i);
         const __m256 u = _mm256_mul_ps(a, _mm256_fmadd_ps(_mm256_mul_ps(_mm256_mul_ps(v, v), v), c3, v));
         _mm256_storeu_ps(x + i, _mm256_div_ps(v, _mm256_add_ps(one, vt_exp8(_mm256_mul_ps(u, _mm256_set1_ps(-2.0f))))));
     }
+#else
+    /* porte ARM, 2026-11-27: sem SIMD; o laco escalar abaixo (que ja existia para a sobra) cobre o intervalo inteiro */
+#endif
     for (; i < n; i++) x[i] = 0.5f * x[i] * (1.0f + tanhf(0.79788456080286535588f * (x[i] + 0.044715f * x[i] * x[i] * x[i])));
 }
 static void vt_gelu(float *X, int n, size_t per, int exact) { VtGeluJob j = { X, per, exact }; pool_for(vt_gelu_job, &j, n, 8); }

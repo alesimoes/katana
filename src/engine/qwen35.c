@@ -105,6 +105,8 @@ static void dn_gate(const Config *c, const Layer *L, float *o, const float *z) {
    de trabalho tem tamanho fixo (QN_MAXCH pedacos), nao cresce com o contexto. Cache fp32, fp16 (m->kh/m->vh) ou Q8_0 (m->kq8/m->vq8). */
 #define QN_MAXCH 256
 #define QN_MAXG 16
+static float f16_to_f32(uint16_t h);     /* src/engine/model.c, mais acima no TU: converte fp16 em fp32 sem SIMD */
+#ifdef __AVX2__
 static float dot_h(const float *a, const uint16_t *b, int n) {
     __m256 acc0 = _mm256_setzero_ps(), acc1 = _mm256_setzero_ps();
     int j = 0;
@@ -119,6 +121,16 @@ static float dot_h(const float *a, const uint16_t *b, int n) {
     for (; j < n; j++) s += a[j] * _mm_cvtss_f32(_mm_cvtph_ps(_mm_cvtsi32_si128(b[j])));
     return s;
 }
+#else
+/* sem AVX2 (porte para ARM/outras plataformas, 2026-11-27): o mesmo somatorio, sem SIMD. Mais lento, nunca testado
+   num celular; serve so para compilar e conferir a saida contra a versao AVX2 (katana selftest) antes de ganhar
+   uma versao NEON. */
+static float dot_h(const float *a, const uint16_t *b, int n) {
+    float s = 0.0f;
+    for (int j = 0; j < n; j++) s += a[j] * f16_to_f32(b[j]);
+    return s;
+}
+#endif
 /* AVX-512 nos tres lacos da atencao (abrir linhas, produtos, somas). KATANA_QN_512=0 volta ao AVX2 (conferencia). Na maquina
    de 11a geracao (uma FMA de 512 bits) o ganho vem de metade das instrucoes: 1,7x nos produtos e nas somas com os dois
    hyperthreads ocupados. */
@@ -175,6 +187,16 @@ static void qn_open_512(float *out, const uint16_t *h, int hd) { (void)out; (voi
 #endif
 /* nq consultas contra nb linhas ja em fp32 (distancia st entre linhas): sc[i] = q . k_i * scale. As consultas ficam a qst
    floats uma da outra; sc tem passo 64. Quatro de cada vez, com os mesmos acumuladores de dot/dot_h. */
+#ifndef __AVX2__
+/* sem AVX2 (porte para ARM/outras plataformas, 2026-11-27): mesmo resultado, uma consulta e uma linha por vez com o
+   dot() escalar que ja existe em cpu_kernels.c. Mais lento, nunca testado num celular; serve so para compilar e
+   conferir a saida contra a versao AVX2 antes de ganhar uma versao NEON. */
+static void qn_dots(const float *q, size_t qst, int nq, const float *K, size_t st, int nb, int hd, float scale, float *sc) {
+    for (int u = 0; u < nq; u++)
+        for (int i = 0; i < nb; i++)
+            sc[(size_t)u * 64 + i] = dot(q + (size_t)u * qst, K + (size_t)i * st, hd) * scale;
+}
+#else
 static void qn_dots(const float *q, size_t qst, int nq, const float *K, size_t st, int nb, int hd, float scale, float *sc) {
     int u = 0;
     if (hd % 16 == 0 && qn_512()) for (; u + 8 <= nq; u += 8) qn_dots8_512(q + (size_t)u * qst, qst, K, st, nb, hd, scale, sc + (size_t)u * 64);
@@ -209,7 +231,22 @@ static void qn_dots(const float *q, size_t qst, int nq, const float *K, size_t s
     }
     for (; u < nq; u++) for (int i = 0; i < nb; i++) sc[(size_t)u * 64 + i] = dot(q + (size_t)u * qst, K + (size_t)i * st, hd) * scale;
 }
+#endif
 /* o[k..k+64) (128 com AVX-512) += soma de w[i] * v_i, linhas na ordem, acumulador em registradores */
+#ifndef __AVX2__
+/* sem AVX2 (porte para ARM/outras plataformas, 2026-11-27): mesma soma, sem SIMD. A versao AVX so cobre um bloco de
+   ate 64 colunas por chamada (o chamador repete a chamada com k crescendo de 64 em 64): aqui tem que ser igual,
+   senao uma segunda chamada soma de novo colunas que a primeira ja tinha coberto (bug real, achado pelo
+   `katana attbench` sob ARM: diferenca de 1,5 contra a referencia, onde no x86 era 2e-07). */
+static void qn_axpys(float *o, const float *w, const float *V, size_t st, int nb, int hd, int k) {
+    const int kend = (k + 64 <= hd) ? k + 64 : hd;
+    for (int kk = k; kk < kend; kk++) {
+        float a = o[kk];
+        for (int i = 0; i < nb; i++) a += w[i] * V[(size_t)i * st + kk];
+        o[kk] = a;
+    }
+}
+#else
 static void qn_axpys(float *o, const float *w, const float *V, size_t st, int nb, int hd, int k) {
     if (k + 64 <= hd) {
         o += k; V += k;
@@ -232,8 +269,10 @@ static void qn_axpys(float *o, const float *w, const float *V, size_t st, int nb
         _mm256_storeu_ps(o + k, a);
     }
 }
+#endif
 /* exp de 8 valores (x <= 0, que e o que sobra depois de tirar o maximo): reducao por ln 2 em duas partes e polinomio de
    grau 6; erro relativo abaixo de 2 ulp, e 0 abaixo de -87 */
+#ifdef __AVX2__
 static inline __m256 qn_exp8(__m256 x) {
     const __m256 z = _mm256_cmp_ps(x, _mm256_set1_ps(-87.0f), _CMP_LT_OQ);
     const __m256 n = _mm256_round_ps(_mm256_mul_ps(x, _mm256_set1_ps(1.44269504088896341f)), _MM_FROUND_TO_NEAREST_INT | _MM_FROUND_NO_EXC);
@@ -279,6 +318,20 @@ static inline float qn_soft(float *sc, int nb, float bm) {
     }
     return qn_hsum8(s);
 }
+#else
+/* sem AVX2 (porte para ARM/outras plataformas, 2026-11-27): mesmo resultado matematico (maximo e depois soma de
+   exp(x - maximo)) com expf() da libm, sem a aproximacao vetorial de 8 em 8. */
+static inline float qn_max(const float *sc, int nb, float bm0) {
+    float m = bm0;
+    for (int i = 0; i < nb; i++) if (sc[i] > m) m = sc[i];
+    return m;
+}
+static inline float qn_soft(float *sc, int nb, float bm) {
+    float s = 0.0f;
+    for (int i = 0; i < nb; i++) { const float e = expf(sc[i] - bm); sc[i] = e; s += e; }
+    return s;
+}
+#endif
 /* abre nb linhas do cache (fp16, Q8_0 ou fp32; r: elemento da primeira) em fp32, com QN_PAD floats de folga por linha: sem
    ela 64 linhas de 1 KB caem nos mesmos conjuntos do L1 (medido: somas 1,6x mais lentas) */
 #define QN_PAD 16
@@ -288,7 +341,11 @@ static void qn_open(float *out, const float *f, const uint16_t *h, const uint8_t
         if (q8) q8_get(out, q8 + r / 32 * 34, hd);
         else if (!h) memcpy(out, f + r, (size_t)hd * sizeof(float));
         else if (z) qn_open_512(out, h + r, hd);
+#ifdef __AVX2__
         else for (int k = 0; k < hd; k += 8) _mm256_storeu_ps(out + k, _mm256_cvtph_ps(_mm_loadu_si128((const __m128i *)(h + r + k))));
+#else
+        else for (int k = 0; k < hd; k++) out[k] = f16_to_f32(h[r + k]);    /* porte ARM, 2026-11-27: sem SIMD */
+#endif
     }
 }
 /* atencao com portao de B tokens seguidos (1 na geracao, ate QN_BMAX no prompt): trabalho = (cabeca kv, pedaco de posicoes,
@@ -330,9 +387,14 @@ static void qn_att_n_job(void *cx, int j0, int j1) {
                     float *sc = scb + (size_t)qi * 64, *o = ob + (size_t)qi * hd;
                     const float bm = qn_max(sc, nb, mx[qi]);
                     if (bm > mx[qi]) {      /* novo maximo: reescala o que ja foi somado */
-                        const __m256 f = _mm256_set1_ps(expf(mx[qi] - bm));
-                        sum[qi] *= _mm256_cvtss_f32(f);
-                        for (int k = 0; k < hd; k += 8) _mm256_storeu_ps(o + k, _mm256_mul_ps(_mm256_loadu_ps(o + k), f));
+                        const float f = expf(mx[qi] - bm);
+                        sum[qi] *= f;
+#ifdef __AVX2__
+                        { const __m256 vf = _mm256_set1_ps(f);
+                          for (int k = 0; k < hd; k += 8) _mm256_storeu_ps(o + k, _mm256_mul_ps(_mm256_loadu_ps(o + k), vf)); }
+#else
+                        for (int k = 0; k < hd; k++) o[k] *= f;      /* porte ARM, 2026-11-27: sem SIMD */
+#endif
                         mx[qi] = bm;
                     }
                     sum[qi] += qn_soft(sc, nb, bm);
@@ -374,8 +436,12 @@ static void qn_join_job(void *cx, int j0, int j1) {
         for (int ch = 0; ch < ncht; ch++) {
             const float *pc = pp + (size_t)ch * (hd + 2), f = expf(pc[0] - M);
             S += pc[1] * f;
-            const __m256 vf = _mm256_set1_ps(f);
-            for (int k = 0; k < hd; k += 8) _mm256_storeu_ps(oh + k, _mm256_fmadd_ps(_mm256_loadu_ps(pc + 2 + k), vf, _mm256_loadu_ps(oh + k)));
+#ifdef __AVX2__
+            { const __m256 vf = _mm256_set1_ps(f);
+              for (int k = 0; k < hd; k += 8) _mm256_storeu_ps(oh + k, _mm256_fmadd_ps(_mm256_loadu_ps(pc + 2 + k), vf, _mm256_loadu_ps(oh + k))); }
+#else
+            for (int k = 0; k < hd; k++) oh[k] += pc[2 + k] * f;      /* porte ARM, 2026-11-27: sem SIMD */
+#endif
         }
         const float *gt = j->gate + (size_t)t * 2 * nh * hd + (size_t)h * 2 * hd + hd, inv = 1.0f / S;
         for (int k = 0; k < hd; k++) oh[k] *= inv / (1.0f + expf(-gt[k]));
@@ -426,10 +492,14 @@ static void qn_core(Model *m, const Layer *L, int l, int pos, const float *qg, f
     const size_t koff = L->kv_off + (size_t)pos * kvd;
     if (m->kq8) { q8_put(m->kq8 + koff / 32 * 34, k, kvd); q8_put(m->vq8 + koff / 32 * 34, v, kvd); }
     else if (m->kh) {
+#ifdef __AVX2__
         for (int i = 0; i < kvd; i += 8) {
             _mm_storeu_si128((__m128i *)(m->kh + koff + i), _mm256_cvtps_ph(_mm256_loadu_ps(k + i), 0));
             _mm_storeu_si128((__m128i *)(m->vh + koff + i), _mm256_cvtps_ph(_mm256_loadu_ps(v + i), 0));
         }
+#else
+        for (int i = 0; i < kvd; i++) { m->kh[koff + i] = f32_to_f16(k[i]); m->vh[koff + i] = f32_to_f16(v[i]); }      /* porte ARM, 2026-11-27 */
+#endif
     } else {
         memcpy(m->kcache + koff, k, kvd * sizeof(float));
         memcpy(m->vcache + koff, v, kvd * sizeof(float));
@@ -467,10 +537,14 @@ static void qn_core_n(Model *m, const Layer *L, int l, int pos0, int B, const fl
         const size_t koff = L->kv_off + (size_t)pos * kvd;
         if (m->kq8) { q8_put(m->kq8 + koff / 32 * 34, k, kvd); q8_put(m->vq8 + koff / 32 * 34, v, kvd); }
         else if (m->kh) {
+#ifdef __AVX2__
             for (int i = 0; i < kvd; i += 8) {
                 _mm_storeu_si128((__m128i *)(m->kh + koff + i), _mm256_cvtps_ph(_mm256_loadu_ps(k + i), 0));
                 _mm_storeu_si128((__m128i *)(m->vh + koff + i), _mm256_cvtps_ph(_mm256_loadu_ps(v + i), 0));
             }
+#else
+            for (int i = 0; i < kvd; i++) { m->kh[koff + i] = f32_to_f16(k[i]); m->vh[koff + i] = f32_to_f16(v[i]); }      /* porte ARM, 2026-11-27 */
+#endif
         } else {
             memcpy(m->kcache + koff, k, kvd * sizeof(float));
             memcpy(m->vcache + koff, v, kvd * sizeof(float));
@@ -1180,18 +1254,28 @@ typedef struct { const float *q; float *o; const float *kb, *vb; const uint16_t 
 /* gemma4: grava k e v de uma posicao no cache (fp32 ou fp16) */
 static void g4_kv_put(float *kb, float *vb, uint16_t *kh, uint16_t *vh, size_t r, const float *k, const float *v, int kvd) {
     if (kh) {
+#ifdef __AVX2__
         for (int i = 0; i < kvd; i += 8) {
             _mm_storeu_si128((__m128i *)(kh + r + i), _mm256_cvtps_ph(_mm256_loadu_ps(k + i), 0));
             _mm_storeu_si128((__m128i *)(vh + r + i), _mm256_cvtps_ph(_mm256_loadu_ps(v + i), 0));
         }
+#else
+        for (int i = 0; i < kvd; i++) { kh[r + i] = f32_to_f16(k[i]); vh[r + i] = f32_to_f16(v[i]); }      /* porte ARM, 2026-11-27 */
+#endif
     } else { memcpy(kb + r, k, kvd * sizeof(float)); memcpy(vb + r, v, kvd * sizeof(float)); }
 }
 /* out += a * v (v em fp16, n multiplo de 8) */
+#ifdef __AVX2__
 static inline void axpy_h(float *out, float a, const uint16_t *v, int n) {
     const __m256 av = _mm256_set1_ps(a);
     for (int k = 0; k < n; k += 8)
         _mm256_storeu_ps(out + k, _mm256_fmadd_ps(av, _mm256_cvtph_ps(_mm_loadu_si128((const __m128i *)(v + k))), _mm256_loadu_ps(out + k)));
 }
+#else
+static inline void axpy_h(float *out, float a, const uint16_t *v, int n) {      /* porte ARM, 2026-11-27: sem SIMD */
+    for (int k = 0; k < n; k++) out[k] += a * f16_to_f32(v[k]);
+}
+#endif
 static void g4_att_job(void *c, int h0, int h1) {
     const G4AttJob *j = c;
     static __thread float *att; static __thread int acap;
