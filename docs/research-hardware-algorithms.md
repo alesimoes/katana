@@ -351,12 +351,28 @@ own text; `selftest --deep` already computes both) before the owner decides its 
   with int8 input and `dotPacked4x8EXT` 0.064-0.068 (~2.8x, *slower* than the fp16 tiled kernel despite being
   bit-exact against a CPU reference — the packed dot product is most likely software-emulated on this driver).
   **So: the tiled/vectorized fp16 path is the one worth integrating; the int8 dot-product extension is present
-  and correct but not worth using on this device.** This is a kernel-level measurement only (T mult/s on
-  synthetic shapes matching Gemma 4 E2B's dense products); the end-to-end generation tok/s this would give if
-  wired into `mm.comp`/`vk_plan` (today, without coopmat, batch is entirely disabled and every token — prompt
-  and generation — runs through the token-by-token kernels at a measured 3.5-3.7 tok/s) is not measured yet and
-  is intentionally not estimated here. Full write-up: `docs/new-models.md`, "Phone (Xclipse 540, Galaxy A56)"
-  under the Gemma 4 E2B section.
+  and correct but not worth using on this device.** This was a kernel-level measurement only (T mult/s on
+  synthetic shapes matching Gemma 4 E2B's dense products); see the next update for the integrated, end-to-end
+  number.
+- **Update [measured] (2026-11-28, integrated and run on the device):** the swap is done — `mm.comp` gained a
+  `COOP=0` build (same `fill()`/weight-decode, the inner 16x16x16 step replaced by the register-blocked scalar
+  loop above, `gen.sh` generates it for all 90 variants the engine loads); `vkg.coop` (`src/engine/vk_dense.c`)
+  now means "batch path usable" (real coopmat **or** fp16+shared-memory), a separate `vkg.coopmat` flag keeps
+  the true capability and picks the SPIR-V set. `katana selftest` on the notebook (coopmat present), normal and
+  with the new `KATANA_VK_FORCE_TILED=1` (forces the tiled set anyway, to check it without the phone): same
+  argmax, logit differences the same order on gemma4e2b/olmoe/granite either way. On the device: before this
+  pass (`vkg.coop` only ever true for real coopmat, so `vk_gemma4.c`'s whole Vulkan graph — not just the batched
+  part — returned 0 and gemma4 touched no GPU kernel at all on this phone), `katana run gemma4e2b.gguf` gave
+  prompt 3.4-4.2 tok/s / generation 3.3-3.7 depending on prompt length; after, a ~275-token prompt reaches
+  **7.0-7.3 tok/s** (generation flat at 3.3-3.8). But isolating the batching itself (`KATANA_VK_BATCH=0` on the
+  *same* post-integration binary) only drops that to 6.3-7.0 — most of the win is `vk_gemma4.c` getting to run
+  on the GPU at all (both its per-token and its batched paths call the same tiled `mm.comp`), not batching per
+  se; a 6-token prompt is actually slightly *slower* after (2.4 vs 3.5 tok/s, dispatch setup not amortized).
+  **The isolated kernel's 4.1x does not show up end to end**: `fill()`'s weight decode and VRAM bandwidth for
+  the same quantized bytes dominate real runtime, not the final reduction step — the point made in section 1.2
+  above ("any technique that does not reduce bytes read per token... has a low ceiling") applies to this
+  proposal too, something the kernel microbenchmark alone could not reveal. Full write-up with the complete
+  table: `docs/new-models.md`, "Phone (Xclipse 540, Galaxy A56)" under the Gemma 4 E2B section.
 
 ### P9. Activation sparsity inside an expert (measure first)
 

@@ -569,6 +569,63 @@ correctness pass per weight type (same GPU-vs-CPU check already used for every o
 can default on. `tools/vkgemm_mobile/bench.c` is a standalone, reusable harness (device probe, CPU-reference
 validation, timed loop) for whoever picks this up.
 
+### Update (2026-11-28): the swap above, done, and the real end-to-end number on the device
+
+`mm.comp` now has a `COOP=0` build (macro, same file): `fill()` — the weight decode into the shared-memory
+tile, identical for every WT type — is untouched; only the inner 16x16x16 step changes, from
+`coopMatLoad`/`coopMatMulAdd`/`coopMatStore` to the register-blocked scalar loop (4x2 outputs per of 32
+logical "lanes", `tools/vkgemm_mobile/tiled_vec.comp`'s technique, read straight off the same shared tile).
+`gen.sh` generates a `_tiled` SPIR-V for all 90 variants the engine loads (plain, glu, and the `_ws`/`_xs`/`_gx`
+precise ones gemma4 actually uses through `vk_mm_p`). `vkg.coop` (`src/engine/vk_dense.c`) now means "batch
+path usable" — true for real `coopmat` **or** for `fp16` + `storageBuffer16BitAccess` + enough shared memory —
+and a separate `vkg.coopmat` flag (true capability) picks which SPIR-V set `vk_mm_spv`/`vk_mm_pw` load.
+`KATANA_VK_FORCE_TILED=1` forces the tiled set even when `coopmat` exists, so the new path can be checked on a
+machine that has coopmat (the notebook) without the phone. `qwen35.c`'s full DeltaNet-in-Vulkan build (the one
+that uses `dn_chunk`/`dn_state`, which are coopMat-only and have no tiled variant in this pass) still checks
+`vkg.coopmat` specifically, so it is unaffected and keeps falling back to its CPU-DeltaNet hybrid mode
+(`vk_qwen35d.c`, which only touches `mm.comp` and does benefit) on a coopmat-less device.
+
+**Numeric validation (notebook, RTX 3050, real coopmat available):** `katana selftest` on gemma4e2b, olmoe and
+granite, normal and with `KATANA_VK_FORCE_TILED=1`, same argmax both times and the logit difference in both
+cases of the same order (gemma4e2b batch vs token-by-token: 4.37e-04 normal, 1.05e-04 forced-tiled; olmoe: 0.035
+vs 0.0027; granite: 0.0013 vs 0.0014) — the tiled path is not less accurate than coopMat here, if anything
+slightly better on two of the three. qwen3.6 unaffected (still builds the full coopmat graph; same output).
+
+**On the device (Galaxy A56, `adb`, binary cross-compiled with NDK r27c for `aarch64-linux-android30`,
+`katana version` `6d165c9`), `katana vkcaps` confirms the gate now opens: `shaderFloat16=1`,
+`storageBuffer16BitAccess=1`, `max_shared_bytes=32768` (exactly the threshold). Before this pass (binary at
+`2609c7c`, `!vkg.coop` was true because it only accepted real coopmat), `vk_gemma4.c`'s whole Vulkan graph for
+gemma4 — not just the batched prompt path, the per-token one too — returned 0 immediately and gemma4 never
+touched the GPU on this phone at all.** Measured with `katana run gemma4e2b.gguf "..." N 0.5`, same prompt
+alternated a few times on each binary (not a formal alternated benchmark, just enough to rule out a one-off):
+
+| Prompt | Before (`2609c7c`, no GPU graph) | After (`6d165c9`) | After, `KATANA_VK_BATCH=0` (same binary, batching off) |
+|---|---|---|---|
+| "Oi, como vai?" (6 tok) | prompt 3.4-3.5 tok/s, gen 3.7 tok/s | prompt 2.4 tok/s, gen 3.8 tok/s | — |
+| ~275-token prompt (tripled paragraph) | prompt 4.1-4.2 tok/s, gen 3.3 tok/s | prompt **7.0-7.3** tok/s, gen 3.3-3.5 tok/s | prompt 6.3-7.0 tok/s, gen 3.5 tok/s |
+
+Two honest readings, not the one hoped for going in: (1) **the win is real and reproducible for a prompt long
+enough to amortize the per-dispatch setup** (~70% more prompt tok/s at 275 tokens), but it is mostly the
+*existence* of `vk_gemma4.c`'s Vulkan graph turning on at all (`vkg.coop` was false, now true) — the
+`KATANA_VK_BATCH=0` column shows that disabling just the multi-token batching inside the now-enabled graph
+barely moves the number (6.3-7.0 vs 7.0-7.3), because the per-token matvecs inside that same graph already call
+the same tiled `mm.comp` kernel with B=1. (2) **For a 6-token prompt the new path is slightly slower than the
+old CPU-only path** (2.4 vs 3.5 tok/s) — fixed GPU dispatch/buffer-setup cost for the now-enabled graph is not
+amortized over so few tokens; generation (always token-by-token, B=1, unaffected by the batch/no-batch
+distinction) is flat to slightly better in every case (3.7-3.8 tok/s). The isolated kernel benchmark's 4.1x
+(section above) does not show up end to end: `fill()`'s weight decode (identical in both paths) and VRAM
+bandwidth for the same quantized bytes, not the final 16x16x16 reduction, dominate the real workload's time —
+exactly what `docs/research-hardware-algorithms.md` section 1.2 already says about this device ("any technique
+that does not reduce bytes read per token... has a low ceiling"). The kernel-level proposal was right that
+tiling beats the naive scalar path (now proven integrated, not just isolated); it was the generalization to
+end-to-end tok/s that this pass had to measure rather than assume.
+
+OLMoE on the same device, same two binaries, short prompt: before 1.3 tok/s prompt / 6.3 tok/s generation,
+after 1.6 / 5.8 — noise-level either way (OLMoE's cost on this device is dominated by expert residency/paging,
+`especialistas: X% na VRAM`, not the dense product this pass touches). Qwen3.6 not re-tested on the device in
+this pass (its Vulkan path needs real `coopmat`, confirmed absent on this GPU by `vkcaps`, so it is logically
+unaffected and was only re-checked on the notebook, where it is unchanged).
+
 ## IBM Granite 4.0 H Tiny in the engine (CPU + GPU hybrid, working since 2026-11-27/28)
 
 Model: `models/granite/model.gguf` (unsloth/granite-4.0-h-tiny-GGUF, Q4_K_M, ~4.1 GB). First architecture in
