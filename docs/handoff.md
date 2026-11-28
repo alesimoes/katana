@@ -114,6 +114,53 @@ bundle). Notebook NVMe, Qwen3.6, CPU path: 10.3 -> 4.4 ms per 8 experts, 4.8 -> 
 ARM64; needs 18.3 GB more storage), then run `bundle check <model> 16` and `bundle bench` with and without `scattered`
 there. The mapped fallback (arena too small for one call) still reads the GGUF.
 
+**2026-11-28, mixed quantization by heat in the expert bundle (format `KTNEXB02`; validated on Qwen3.6, the only
+model this session has, not just OLMoE as before; no speed measured, owner's rule for this phase).** `katana bundle
+<model.gguf>` now also writes, right after each expert's original (hi) record, a second, smaller copy requantized to
+`KATANA_BUNDLE_COLD` (`T_Q2_K` by default — the only type `enc_block` can write below Q4_K; `=0` turns the cold copy
+off; an expert already at or below the cold type's bits gets no cold copy). Each `EtBx` index entry gained
+`cpos/clen/crel/crec` for the cold record (0 = no cold copy for that expert); both records stay page-aligned, one
+read each, same as the hi record. At read time the arena compares each expert's own tracked heat (`et.ghot`, one
+value per (layer, expert), independent of the RAM slot that holds it, so it survives eviction) against the global
+average and reads the cold copy when below it (fewer bytes from disk); a never-seen expert starts "hot" and only
+falls to cold after repeated low use. The Mat's `type`/`stride` for that call are swapped to the cold type, so the
+existing dot-product kernels pick the right path by `Mat.type` with no change needed there, except for one real gap,
+found and fixed below. `katana bundle check <model> [step] [scattered] [cold]`: without `cold`, compares the hot
+copy with the mapped GGUF byte by byte, as before; with `cold`, forces every read to the cold copy and compares it
+against a `Q2_K` requantization computed fresh from the mapped GGUF at check time — independent of whatever
+`katana bundle` wrote, not just a replay of it.
+
+Validation on `models/Qwen3.6-35B-A3B-UD-Q4_K_M.gguf`:
+- `./katana bundle check <model> 16`: 640 experts, 1.14 GB, OK, byte-identical to the mapped GGUF.
+- `./katana bundle check <model> 16 cold`: 640 experts, 0.62 GB, OK, byte-identical to the Q2_K requantization
+  recomputed independently at check time.
+- Independent Python cross-check (outside the katana binary, done earlier in this work) of Q4_K -> Q2_K
+  requantizations: max per-weight difference 0.0591 against the Q4_K-dequantized value. **Not covered by that
+  cross-check: experts whose original type is Q6_K** (the sample was Q4_K only); the C-side `bundle check ... cold`
+  above does cover whatever type each expert actually has, including Q6_K, since it recomputes from the real mapped
+  GGUF, but that is a byte-identity check against katana's own encoder, not an independent one.
+
+**Found and fixed a real crash that neither `bundle check` form catches (both only exercise the read/byte-compare
+path, never inference):** the first `KATANA_EXPERT_RAM=16 ./katana run models/Qwen3.6-35B-A3B-UD-Q4_K_M.gguf "Oi,
+como vai?" 40 0.6` segfaulted inside `dot()`, called from `moe_rows`/`moe_dot` (`src/engine/vk_dense.c`) through
+`moe_cpu_multi`. Cause: `moe_dot` only had dedicated kernels for `T_Q8_0`/`T_Q5_1`; every other type falls back to
+`dot_row`'s generic branch, which dequantizes the row and multiplies it by a **real float activation pointer** — but
+the expert pool path only keeps a pre-quantized activation (`xq_tls`, int16 per 256-element block) and calls
+`dot_row(..., NULL, NULL, ...)`. As soon as a layer's batch mixed a hot expert (whose type already picks the
+fast/int path, so the batch is dispatched through the pool) with a `Q2_K` cold expert, `moe_dot` dereferenced that
+NULL pointer. Fixed with `moe_dot_q2k()` (`src/engine/vk_dense.c`, next to `moe_dot`), which reconstructs the
+activation from `xq` (the same int16-per-block scheme the other int kernels already use) instead of needing a real
+float `x`. After the fix, two runs (`KATANA_EXPERT_RAM=16`, "Oi, como vai?" and a longer prompt asking about binary
+trees, 40 and 60 tokens) completed with coherent Portuguese text and no crash, with the cold path actually exercised
+(64-72% of expert reads were cold in these two runs, confirming the fixed code path is the one that used to crash).
+No speed comparison was made (not this phase's rule); the `tok/s` numbers in the run output are the normal per-run
+report, not a benchmark.
+
+**Pending:** only checked with `KATANA_EXPERT_RAM=16` on the notebook, not on the phone; `dot_row`'s own generic
+branch (used directly, with a real `x`, by non-MoE callers) was left untouched and still requires a real `x` — any
+future type added to the MoE pool path that is not already in `moe_int`'s list needs the same treatment as
+`moe_dot_q2k`.
+
 **2026-11-22, expert tiers (GPU / RAM / SSD) for MoE larger than RAM.** `src/engine/expert_tier.c` (hooks: `moe_route`,
 `moe_cpu_multi`, `qn_layer`, `load_model`, one line each; the file is `#ifdef __linux__`). `KATANA_EXPERT_RAM=<GB>` (max
 25) makes the CPU expert path read experts into an arena of RAM slots with 16 parallel O_DIRECT reads, evict by decayed
