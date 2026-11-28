@@ -104,6 +104,16 @@ To resume: `plan.md` (backlog T1 to T7 and the current goal), then `uioe.md` sec
 
 **2026-11-23, the teacher is an external plugin.** The vendor part of teacher mode left the binary: `src/agent/teacher.c` now runs a configured program (`KATANA_TEACHER_CMD`, `~/.katana/teacher.cmd` or `~/.katana/plugins/teacher/run`) with a JSON-lines protocol (`docs/teacher-protocol.md`) and keeps everything vendor-free (rewrite in the student's syntax, history and KV cache, `<session>.teacher`, `export --teacher`, on/off in the middle of a conversation). The Messages API and CLI connections, key reading, default model/URL/effort and the fallback are in `plugins/teacher-anthropic/` (Python, standard library). Install it once (`ln -s plugins/teacher-anthropic ~/.katana/plugins/teacher`) or the teacher refuses to turn on. `/teacher api|cli` are gone (use `KATANA_TEACHER_VIA`). Checked: build; a shell stand-in teacher (text + tool call) on a tiny model through `/teacher on`, tool ran, `export --teacher` ok; the plugin against its mock API server (6 requests accepted, signed reasoning round trip, 6 teacher spans); `tools/tooltest/channel.sh` 76/0; the plugin's cli connection with a fake program. **Not checked**: the plugin against the real API and the real `claude` program (no key), the rest of `tools/traintest/run.sh`, `tools/tooltest/launch.sh`/`extend.sh`/`console_pty.py`, `tools/servertest` (scripts updated, not re-run), the desktop build (QML/C++ text and defaults only changed).
 
+**2026-11-27, expert bundle: one read per expert.** `katana bundle <model.gguf>` writes `<model.gguf>.exb` (gate, up and
+down of each expert contiguous, page-aligned record, same bytes and 64-byte alignment as the GGUF); with
+`KATANA_EXPERT_RAM` the arena uses it automatically when its index matches the model (otherwise it warns and reads the
+GGUF). `katana bundle check <model> [step] [scattered]` compares every expert read through the arena with the mapped
+GGUF; `katana bundle bench <model> [rounds] [scattered]` times fetching K uncached experts (`scattered` ignores the
+bundle). Notebook NVMe, Qwen3.6, CPU path: 10.3 -> 4.4 ms per 8 experts, 4.8 -> 6.9 tok/s with a 3 GB arena
+(knowledge.md 5c (d)). **Pending**: measure on the phone (push the `.exb` made on the notebook, it is the same file on
+ARM64; needs 18.3 GB more storage), then run `bundle check <model> 16` and `bundle bench` with and without `scattered`
+there. The mapped fallback (arena too small for one call) still reads the GGUF.
+
 **2026-11-22, expert tiers (GPU / RAM / SSD) for MoE larger than RAM.** `src/engine/expert_tier.c` (hooks: `moe_route`,
 `moe_cpu_multi`, `qn_layer`, `load_model`, one line each; the file is `#ifdef __linux__`). `KATANA_EXPERT_RAM=<GB>` (max
 25) makes the CPU expert path read experts into an arena of RAM slots with 16 parallel O_DIRECT reads, evict by decayed

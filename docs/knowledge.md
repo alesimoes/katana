@@ -217,7 +217,23 @@ tokens, 0.3%). Recall drops with distance because the residual stream keeps chan
 io_uring works here without new libraries and is no faster than a thread pool (the device is the limit), so the engine
 uses threads (16). The disk saturates at 8-16 reads in flight. Reading an expert as three separate 0.59 MB blocks gives
 1.3 GB/s; one contiguous 1.77 MB block would give 2.1 GB/s (+60%): a sidecar file with each expert's three matrices
-side by side is the next step for the SSD tier (not done).
+side by side is the next step for the SSD tier (done 2026-11-27, below).
+
+**(d) Expert bundle** (`katana bundle <model.gguf>`, 2026-11-27): writes `<model.gguf>.exb`, one page-aligned record per
+expert with gate, up and down side by side (same bytes as the GGUF, each matrix at the same 64-byte alignment), and the
+arena then does one read per expert instead of three. Used automatically when the file exists and its index matches the
+model. Cost: a second copy of the expert bytes on disk (18.3 GB for Qwen3.6). Correctness: `katana bundle check` reads
+every expert through the real arena path and compares with the mapped GGUF (10,240 experts, 18.2 GB, identical; a
+flipped byte in the bundle is caught); greedy output of 40 tokens identical between bundle, GGUF arena and mapped path.
+Measured on the notebook NVMe, CPU path (`KATANA_CPU=1`), O_DIRECT, 16 threads, Qwen3.6:
+
+| | GGUF, 3 reads | bundle, 1 read |
+|---|---|---|
+| `katana bundle bench`: 8 uncached experts of one layer | 10.3 ms, 1.4 GB/s | 4.4 ms, 3.2 GB/s |
+| generation, `KATANA_EXPERT_RAM=3`, 40 tokens, 3 alternated runs | 4.8 tok/s | 6.9 tok/s |
+| token wait on reads in that run | 6.6 s | 3.2 s |
+
+Not measured on the phone (UFS storage) yet.
 
 **Tokens/s, CPU path, prompt of 30 tokens then 96 generated greedily (alternating runs are in comparisons.md 18)**
 

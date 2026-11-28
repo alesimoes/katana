@@ -15,6 +15,14 @@
  *   KATANA_EXPERT_DIRECT=0      leitura com cache do sistema em vez de O_DIRECT
  *   KATANA_EXPERT_PFD=<d>       distancia da previsao em camadas (padrao 1; 2 e 3 usam o roteador antecipado)
  *
+ * Pacote de especialistas (katana bundle <modelo.gguf>): no GGUF as tres matrizes de um especialista (gate, up, down)
+ * ficam em tres regioes afastadas do arquivo, entao trazer um especialista sao tres leituras. O comando grava
+ * <modelo.gguf>.exb com as tres juntas, um registro por especialista comecando em fronteira de pagina, e a arena
+ * passa a fazer UMA leitura por especialista. Os bytes sao os do GGUF e cada matriz fica no mesmo alinhamento
+ * de 64 bytes do original, entao o resultado continua identico bit a bit. Se o arquivo existe e confere com o
+ * modelo (tamanho do GGUF, posicao e tamanho de cada matriz), a arena o usa sozinha; se nao confere, avisa e le
+ * do GGUF. katana bundle check confere os bytes pelo caminho real da arena; katana bundle bench mede as leituras.
+ *
  * Um token nunca usa especialista que o roteador nao escolheu: a previsao so adianta leituras; o que o roteador
  * escolhe e pedido na hora (se a arena nao comporta os pedidos de uma chamada, a chamada usa o caminho mapeado).
  * Medidas (katana tiersim ...) e o teste de leitura aleatoria do disco (katana iobench) ficam no fim do arquivo. */
@@ -39,9 +47,18 @@ typedef struct {
     uint64_t stamp;             /* ultimo uso */
     uint64_t ptick;             /* token em que a previsao a pediu */
     double heat;                /* frequencia com decaimento (escala crescente) */
-    size_t doff[3];             /* onde cada matriz comeca na vaga */
+    size_t doff[3];             /* onde os dados de cada matriz comecam na vaga */
 } EtSlot;
-typedef struct { int slot, r; size_t off, len; } EtJob;
+typedef struct { int slot; size_t dst, off, len; } EtJob;      /* le [off, off+len) do arquivo para vaga + dst */
+/* pacote de especialistas (<modelo>.exb): cabecalho, indice (um EtBx por camada x especialista) e os registros */
+#define ET_BX_MAGIC "KTNEXB01"
+typedef struct { char magic[8]; uint32_t L, E; uint64_t gguf_size, data_start; uint8_t pad[32]; } EtBxHdr;
+typedef struct {
+    uint64_t pos;               /* inicio do registro no pacote (multiplo de pagina) */
+    uint64_t src[3];            /* onde cada matriz esta no GGUF (confere o pacote com o modelo) */
+    uint32_t len[3], rel[3];    /* tamanho de cada matriz e onde ela comeca dentro do registro */
+    uint32_t rec, pad;          /* tamanho do registro, arredondado para paginas */
+} EtBx;
 static struct {
     int L, E, K, nslots, nthr, direct, policy, pred, pfn, pfd, fd, last_l;
     size_t slot_bytes; uint8_t *arena; int *where; EtSlot *sl;
@@ -55,7 +72,9 @@ static struct {
     uint64_t hit, miss, bypass, pf_issued, pf_useful, pf_late, pf_wasted, calls;
     double bytes, t_stall, t_read; uint64_t reads;
     double t_pred;
+    EtBx *bx;                   /* indice do pacote; NULL = le as tres regioes do GGUF */
 } et;
+static int et_no_bundle;        /* katana bundle check|bench ... scattered: ignora o pacote (comparar os dois caminhos) */
 
 static int et_pread_full(int fd, void *buf, size_t len, off_t off) {
     size_t got = 0;
@@ -78,7 +97,7 @@ static void *et_worker(void *arg) {
         else j = et.pq[et.pqh++ % et.qcap];
         pthread_mutex_unlock(&et.mu);
         const double t0 = now_sec();
-        uint8_t *dst = et.arena + (size_t)j.slot * et.slot_bytes + et.sl[j.slot].doff[j.r];
+        uint8_t *dst = et.arena + (size_t)j.slot * et.slot_bytes + j.dst;
         if (et_pread_full(et.fd, dst, j.len, (off_t)j.off) != 0) { perror("expert_tier: pread"); exit(1); }
         const double dt = now_sec() - t0;
         pthread_mutex_lock(&et.mu);
@@ -107,6 +126,47 @@ static void et_span(size_t off, size_t len, size_t *a, size_t *b) {
     *a = off & ~(size_t)(ET_PG - 1); *b = (off + len + ET_PG - 1) & ~(size_t)(ET_PG - 1);
 }
 
+/* registro do pacote: as tres matrizes em seguida, cada uma no mesmo alinhamento de 64 bytes que tem no GGUF.
+   Devolve o tamanho do registro (multiplo de pagina). */
+static size_t et_bx_layout(const size_t off[3], const size_t len[3], size_t rel[3]) {
+    size_t pos = 0;
+    for (int r = 0; r < 3; r++) { rel[r] = pos + ((off[r] - pos) & 63); pos = rel[r] + len[r]; }
+    return (pos + ET_PG - 1) & ~(size_t)(ET_PG - 1);
+}
+static void et_bx_name(char *out, size_t cap, const char *model) { snprintf(out, cap, "%s.exb", model); }
+/* abre o pacote do modelo e confere com ele; devolve o indice ou NULL (sem pacote, ou pacote de outro arquivo) */
+static EtBx *et_bx_open(const Model *m, const char *model, int L, int E, int *fd_out, int direct) {
+    char fn[1100]; et_bx_name(fn, sizeof fn, model);
+    struct stat sg, sb;
+    int fd = open(fn, O_RDONLY);
+    if (fd < 0) return NULL;
+    EtBxHdr h; EtBx *bx = NULL; const size_t n = (size_t)L * E;
+    const char *why = "cabecalho";
+    if (fstat(fd, &sb) != 0 || stat(model, &sg) != 0 || et_pread_full(fd, &h, sizeof h, 0) != 0 || (size_t)sb.st_size < sizeof h) goto bad;
+    if (memcmp(h.magic, ET_BX_MAGIC, 8) || h.L != (uint32_t)L || h.E != (uint32_t)E || h.gguf_size != (uint64_t)sg.st_size) { why = "e de outro modelo"; goto bad; }
+    if ((uint64_t)sb.st_size < sizeof h + n * sizeof(EtBx)) { why = "indice cortado"; goto bad; }
+    bx = xalloc(n, sizeof(EtBx));
+    if (et_pread_full(fd, bx, n * sizeof(EtBx), sizeof h) != 0) goto bad;
+    why = "indice nao confere com o modelo";
+    for (int l = 0; l < L; l++) for (int e = 0; e < E; e++) {
+        const EtBx *b = &bx[(size_t)l * E + e];
+        size_t off[3], len[3], rel[3];
+        if (!et_regions(m, l, e, off, len)) goto bad;
+        const size_t rec = et_bx_layout(off, len, rel);
+        for (int r = 0; r < 3; r++) if (b->src[r] != off[r] || b->len[r] != len[r] || b->rel[r] != rel[r]) goto bad;
+        if (b->rec != rec || (b->pos & (ET_PG - 1)) || b->pos < h.data_start || b->pos + rec > (uint64_t)sb.st_size) goto bad;
+    }
+    close(fd);
+    fd = open(fn, O_RDONLY | (direct ? O_DIRECT : 0));
+    if (fd < 0) { perror("expert_tier: open do pacote"); free(bx); return NULL; }
+    *fd_out = fd;
+    return bx;
+bad:
+    fprintf(stderr, "expert_tier: %s ignorado (%s); refaca com katana bundle\n", fn, why);
+    close(fd); free(bx);
+    return NULL;
+}
+
 /* escolhe a vaga a despejar: menor valor entre as prontas, sem uso na chamada e sem previsao pendente de uso
    (previsao so despeja as outras). Chamada com o mutex tomado. Devolve -1 se nao houver. */
 static int et_victim(void) {
@@ -125,21 +185,34 @@ static int et_victim(void) {
 static void et_fill(Model *m, int s, int l, int e, int demand) {
     EtSlot *p = &et.sl[s];
     size_t off[3], len[3], pos = 0;
-    et_regions(m, l, e, off, len);
     if (p->key >= 0) {
         if (p->pf) et.pf_wasted++;
         et.where[p->key] = -1;
     }
-    p->key = l * et.E + e; et.where[p->key] = s; p->state = 1; p->pend = 3; p->pf = !demand; p->ptick = et.tick; p->heat = 0;
+    p->key = l * et.E + e; et.where[p->key] = s; p->state = 1; p->pf = !demand; p->ptick = et.tick; p->heat = 0;
+    if (et.bx) {                                /* pacote: o registro inteiro numa leitura so */
+        const EtBx *b = &et.bx[p->key];
+        for (int r = 0; r < 3; r++) p->doff[r] = b->rel[r];
+        EtJob j = { s, 0, (size_t)b->pos, b->rec };
+        p->pend = 1;
+        if (demand) et.q[et.qt++ % et.qcap] = j; else et.pq[et.pqt++ % et.qcap] = j;
+        pthread_cond_broadcast(&et.cv_job);
+        return;
+    }
+    et_regions(m, l, e, off, len);
+    p->pend = 3;
     for (int r = 0; r < 3; r++) {
         size_t a, b; et_span(off[r], len[r], &a, &b);
-        p->doff[r] = pos;                      /* a leitura grava aqui; o dado fica em doff + (off - a) */
-        EtJob j = { s, r, a, b - a };
+        p->doff[r] = pos + (off[r] - a);        /* a leitura grava em pos; o byte `off` cai em pos + (off - a) */
+        EtJob j = { s, pos, a, b - a };
         pos += b - a;
         if (demand) et.q[et.qt++ % et.qcap] = j; else et.pq[et.pqt++ % et.qcap] = j;
     }
     pthread_cond_broadcast(&et.cv_job);
 }
+
+/* os dados da matriz r (0 gate, 1 up, 2 down) do especialista que esta na vaga s */
+static const uint8_t *et_slot_data(int s, int r) { return et.arena + (size_t)s * et.slot_bytes + et.sl[s].doff[r]; }
 
 /* chamada do moe_cpu_multi: devolve 0 se a arena nao pode servir (usa o caminho mapeado) */
 static int et_wrap(Model *m, const Layer *L, const int *ex, const int *xi, int n, int n_x, const float *xs, float *outs) {
@@ -193,15 +266,8 @@ static int et_wrap(Model *m, const Layer *L, const int *ex, const int *xi, int n
     }
     pthread_mutex_unlock(&et.mu);
     for (int u = 0; u < nu; u++) {                          /* Mats que apontam para a arena, com o mesmo alinhamento do arquivo */
-        size_t off[3], len[3];
-        et_regions(m, l, uniq[u], off, len);
-        const EtSlot *p = &et.sl[slot[u]];
-        const uint8_t *b = et.arena + (size_t)slot[u] * et.slot_bytes;
         eg[u] = L->eg[uniq[u]]; eu[u] = L->eu[uniq[u]]; ed[u] = L->ed[uniq[u]];
-        size_t a, e2;
-        et_span(off[0], len[0], &a, &e2); eg[u].q = b + p->doff[0] + (off[0] - a);
-        et_span(off[1], len[1], &a, &e2); eu[u].q = b + p->doff[1] + (off[1] - a);
-        et_span(off[2], len[2], &a, &e2); ed[u].q = b + p->doff[2] + (off[2] - a);
+        eg[u].q = et_slot_data(slot[u], 0); eu[u].q = et_slot_data(slot[u], 1); ed[u].q = et_slot_data(slot[u], 2);
     }
     free(slot); free(need);
     Layer tmp = *L; tmp.eg = eg; tmp.eu = eu; tmp.ed = ed;
@@ -318,12 +384,16 @@ static void et_init(Model *m, const char *path, const uint8_t *base) {
         for (int r = 0; r < 3; r++) { size_t a, b; et_span(off[r], len[r], &a, &b); t += b - a; }
         if (t > mx) mx = t;
     }
+    const char *s;
+    et.direct = (s = getenv("KATANA_EXPERT_DIRECT")) ? atoi(s) : 1;
+    et.fd = -1;
+    if (!et_no_bundle) et.bx = et_bx_open(m, path, et.L, et.E, &et.fd, et.direct);
+    if (et.bx) { mx = 0; for (int i = 0; i < et.L * et.E; i++) if (et.bx[i].rec > mx) mx = et.bx[i].rec; }
     et.slot_bytes = (mx + ET_PG - 1) & ~(size_t)(ET_PG - 1);
     size_t ns = (size_t)(gb * 1073741824.0 / (double)et.slot_bytes);
     if (ns > (size_t)et.L * et.E) ns = (size_t)et.L * et.E;
     if (ns < 8) { fprintf(stderr, "expert_tier: orcamento pequeno demais\n"); return; }
     et.nslots = (int)ns;
-    const char *s;
     et.policy = (s = getenv("KATANA_EXPERT_POLICY")) && !strcmp(s, "lru") ? 1 : 0;
     et.decay = (s = getenv("KATANA_EXPERT_DECAY")) ? atof(s) : 0.95; et.grow = 1.0;
     et.pred = (s = getenv("KATANA_EXPERT_PRED")) ? (!strcmp(s, "cooc") ? 1 : !strcmp(s, "prev") ? 2 : !strcmp(s, "none") ? 3 : 0) : 0;
@@ -332,8 +402,7 @@ static void et_init(Model *m, const char *path, const uint8_t *base) {
     if (et.pfd < 1) et.pfd = 1;
     if (et.pred == 1) et.pfd = 1;
     et.nthr = (s = getenv("KATANA_EXPERT_IO")) ? atoi(s) : 16;
-    et.direct = (s = getenv("KATANA_EXPERT_DIRECT")) ? atoi(s) : 1;
-    et.fd = open(path, O_RDONLY | (et.direct ? O_DIRECT : 0));
+    if (!et.bx) et.fd = open(path, O_RDONLY | (et.direct ? O_DIRECT : 0));
     if (et.fd < 0) { perror("expert_tier: open"); return; }
     et.arena = mmap(NULL, (size_t)et.nslots * et.slot_bytes, PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANONYMOUS | MAP_NORESERVE, -1, 0);
     if (et.arena == MAP_FAILED) { perror("expert_tier: mmap"); return; }
@@ -352,10 +421,11 @@ static void et_init(Model *m, const char *path, const uint8_t *base) {
     et_hook_route = et_route;
     et_on = 1;
     atexit(et_report);
-    fprintf(stderr, "[expert_tier] ligado: %d vagas de %.2f MB = %.2f GB; despejo %s, previsao %s (%d por camada, %d camada(s) a frente), %d threads, %s\n",
+    fprintf(stderr, "[expert_tier] ligado: %d vagas de %.2f MB = %.2f GB; despejo %s, previsao %s (%d por camada, %d camada(s) a frente), %d threads, %s, %s\n",
             et.nslots, et.slot_bytes / 1048576.0, (double)et.nslots * et.slot_bytes / 1073741824.0, et.policy ? "lru" : "frequencia",
             et.pred == 0 ? "roteador antecipado" : et.pred == 1 ? "coocorrencia" : et.pred == 2 ? "token anterior" : "nenhuma",
-            et.pfn, et.pfd, et.nthr, et.direct ? "O_DIRECT" : "com cache");
+            et.pfn, et.pfd, et.nthr, et.direct ? "O_DIRECT" : "com cache",
+            et.bx ? "pacote .exb (1 leitura por especialista)" : "GGUF (3 leituras por especialista)");
 }
 
 /* ====================== medidas: katana tiersim run|sim, katana iobench ======================
@@ -690,11 +760,151 @@ static int iob_main(int argc, char **argv) {
     return 0;
 }
 
+/* ====================== katana bundle: pacote de especialistas ======================
+ * bundle <modelo.gguf>                        grava <modelo.gguf>.exb (gate+up+down de cada especialista juntos)
+ * bundle check <modelo.gguf> [passo] [scattered]   le cada especialista (ou um a cada `passo`) pelo caminho real da
+ *                                             arena (fila, threads, O_DIRECT) e compara byte a byte com o GGUF mapeado
+ * bundle bench <modelo.gguf> [rodadas] [scattered]   tempo para trazer K especialistas que nao estao na arena (o custo
+ *                                             de uma camada sem acerto); `scattered` ignora o pacote e le do GGUF */
+static void etb_load(Model *m, const char *model, int arena) {
+    memset(m, 0, sizeof *m);
+    setenv("KATANA_CPU", "1", 1);
+    if (!arena) unsetenv("KATANA_EXPERT_RAM");
+    else if (!getenv("KATANA_EXPERT_RAM")) setenv("KATANA_EXPERT_RAM", "0.25", 1);
+    load_model(m, model);
+    if (!m->cfg.n_expert) die("modelo sem especialistas");
+    if (!et_base) die("modelo em partes: o pacote ainda nao cobre");
+    if (arena && !et_on) die("a arena de especialistas nao ligou");
+}
+static int etb_write(const char *model) {
+    Model m; etb_load(&m, model, 0);
+    const int L = m.cfg.n_layers, E = m.cfg.n_expert; const size_t n = (size_t)L * E;
+    struct stat sg;
+    if (stat(model, &sg) != 0) die("nao li o tamanho do modelo");
+    EtBxHdr h; memset(&h, 0, sizeof h);
+    memcpy(h.magic, ET_BX_MAGIC, 8); h.L = (uint32_t)L; h.E = (uint32_t)E; h.gguf_size = (uint64_t)sg.st_size;
+    h.data_start = (sizeof h + n * sizeof(EtBx) + ET_PG - 1) & ~(uint64_t)(ET_PG - 1);
+    EtBx *bx = xalloc(n, sizeof(EtBx));
+    uint64_t pos = h.data_start; size_t mx = 0;
+    for (int l = 0; l < L; l++) for (int e = 0; e < E; e++) {
+        EtBx *b = &bx[(size_t)l * E + e];
+        size_t off[3], len[3], rel[3];
+        if (!m.layers[l].eg || !et_regions(&m, l, e, off, len)) die("especialistas nao quantizados ou nao empilhados");
+        const size_t rec = et_bx_layout(off, len, rel);
+        if (rec > 0xffffffffu) die("especialista grande demais para o pacote");
+        b->pos = pos; b->rec = (uint32_t)rec;
+        for (int r = 0; r < 3; r++) { b->src[r] = off[r]; b->len[r] = (uint32_t)len[r]; b->rel[r] = (uint32_t)rel[r]; }
+        pos += rec; if (rec > mx) mx = rec;
+    }
+    char fn[1100], tmp[1110]; et_bx_name(fn, sizeof fn, model); snprintf(tmp, sizeof tmp, "%s.tmp", fn);
+    FILE *f = fopen(tmp, "wb");
+    if (!f) die("nao criei o pacote");
+    uint8_t *rec = xalloc(mx, 1), *zero = xalloc(ET_PG, 1);
+    int ok = fwrite(&h, sizeof h, 1, f) == 1 && fwrite(bx, sizeof(EtBx), n, f) == n;
+    const size_t padn = (size_t)(h.data_start - (sizeof h + n * sizeof(EtBx)));
+    if (padn) ok = ok && fwrite(zero, 1, padn, f) == padn;
+    const double t0 = now_sec();
+    for (int l = 0; l < L && ok; l++) {
+        for (int e = 0; e < E && ok; e++) {
+            const EtBx *b = &bx[(size_t)l * E + e];
+            memset(rec, 0, b->rec);
+            for (int r = 0; r < 3; r++) memcpy(rec + b->rel[r], et_base + b->src[r], b->len[r]);
+            ok = fwrite(rec, 1, b->rec, f) == b->rec;
+        }
+        fprintf(stderr, "\rcamada %d de %d", l + 1, L);
+    }
+    ok = ok && fflush(f) == 0 && fsync(fileno(f)) == 0;
+    if (fclose(f) != 0) ok = 0;
+    if (!ok || rename(tmp, fn) != 0) { remove(tmp); die("falha ao gravar o pacote (disco cheio?)"); }
+    fprintf(stderr, "\n%s: %d camadas x %d especialistas, %.2f GB, registro de ate %.1f KB, %.0f s\n", fn, L, E, (double)pos / 1073741824.0, mx / 1024.0, now_sec() - t0);
+    return 0;
+}
+/* pede o especialista (l, e) a arena como uma chamada de verdade; devolve a vaga (mutex tomado na volta nao) */
+static int etb_request(Model *m, int l, int e) {
+    int s = et.where[l * et.E + e];
+    if (s < 0) { s = et_victim(); if (s < 0) die("arena sem vaga livre"); et_fill(m, s, l, e, 1); }
+    et.sl[s].pin = et.serial; et.sl[s].pf = 0;
+    return s;
+}
+static int etb_check(const char *model, int step, int scattered) {
+    Model m; et_no_bundle = scattered; etb_load(&m, model, 1);
+    const int L = et.L, E = et.E;
+    if (step < 1) step = 1;
+    long nexp = 0, bad = 0; double bytes = 0;
+    const double t0 = now_sec();
+    for (int l = 0; l < L; l++) {
+        for (int e = l % step; e < E; e += step) {
+            pthread_mutex_lock(&et.mu);
+            et.serial++;
+            const int s = etb_request(&m, l, e);
+            while (et.sl[s].state != 2) pthread_cond_wait(&et.cv_done, &et.mu);
+            pthread_mutex_unlock(&et.mu);
+            size_t off[3], len[3];
+            et_regions(&m, l, e, off, len);
+            const Mat *ms[3] = { &m.layers[l].eg[e], &m.layers[l].eu[e], &m.layers[l].ed[e] };
+            for (int r = 0; r < 3; r++) {
+                const uint8_t *q = et_slot_data(s, r);
+                bytes += (double)len[r];
+                if ((((uintptr_t)q ^ (uintptr_t)ms[r]->q) & 63) || memcmp(q, ms[r]->q, len[r])) {
+                    if (bad++ < 10) fprintf(stderr, "\nDIFERENTE: camada %d especialista %d matriz %d\n", l, e, r);
+                }
+            }
+            nexp++;
+        }
+        fprintf(stderr, "\rcamada %d de %d", l + 1, L);
+    }
+    printf("\n%s: %ld especialistas (%.2f GB) lidos pela arena e comparados com o GGUF mapeado em %.1f s: %s\n",
+           et.bx ? "pacote .exb" : "GGUF, 3 regioes", nexp, bytes / 1073741824.0, now_sec() - t0, bad ? "FALHOU" : "OK, identicos byte a byte");
+    if (bad) printf("%ld matrizes diferentes\n", bad);
+    return bad ? 1 : 0;
+}
+static int etb_bench(const char *model, int rounds, int scattered) {
+    Model m; et_no_bundle = scattered; etb_load(&m, model, 1);
+    const int L = et.L, E = et.E, K = et.K;
+    if (rounds < 1) rounds = 300;
+    if (K > 64 || 2 * K > et.nslots) die("arena pequena para o teste");
+    uint64_t rs = 88172645463325252ull; double worst = 0, bytes0 = et.bytes; uint64_t reads0 = et.reads;
+    const double t0 = now_sec();
+    for (int i = 0; i < rounds; i++) {
+        const int l = (int)(iob_rng(&rs) % (uint64_t)L);
+        int sl[64], ex[64], n = 0;
+        while (n < K) {                                 /* K especialistas distintos da camada que nao estao na arena */
+            const int e = (int)(iob_rng(&rs) % (uint64_t)E);
+            int dup = et.where[l * E + e] >= 0;
+            for (int j = 0; j < n; j++) dup |= ex[j] == e;
+            if (!dup) ex[n++] = e;
+        }
+        const double t1 = now_sec();
+        pthread_mutex_lock(&et.mu);
+        et.serial++;
+        for (int j = 0; j < K; j++) sl[j] = etb_request(&m, l, ex[j]);
+        for (int j = 0; j < K; j++) while (et.sl[sl[j]].state != 2) pthread_cond_wait(&et.cv_done, &et.mu);
+        pthread_mutex_unlock(&et.mu);
+        const double dt = now_sec() - t1;
+        if (dt > worst) worst = dt;
+    }
+    const double dt = now_sec() - t0, gb = (et.bytes - bytes0) / 1073741824.0;
+    printf("%s, %s, %d threads: %d rodadas de %d especialistas fora da arena: %.2f ms por rodada (pior %.2f ms), %.0f especialistas/s, %.2f GB/s, %llu leituras\n",
+           et.bx ? "pacote .exb (1 leitura)" : "GGUF (3 leituras)", et.direct ? "O_DIRECT" : "com cache", et.nthr, rounds, K, 1e3 * dt / rounds, 1e3 * worst,
+           (double)rounds * K / dt, gb / dt, (unsigned long long)(et.reads - reads0));
+    return 0;
+}
+static int etb_main(int argc, char **argv) {
+    const int sc = argc > 3 && !strcmp(argv[argc - 1], "scattered");
+    const int na = argc - sc;
+    if (na >= 4 && !strcmp(argv[2], "check")) return etb_check(argv[3], na > 4 ? atoi(argv[4]) : 1, sc);
+    if (na >= 4 && !strcmp(argv[2], "bench")) return etb_bench(argv[3], na > 4 ? atoi(argv[4]) : 300, sc);
+    if (argc == 3) return etb_write(argv[2]);
+    fprintf(stderr, "katana bundle <modelo.gguf> | check <modelo.gguf> [passo] [scattered] | bench <modelo.gguf> [rodadas] [scattered]\n");
+    return 1;
+}
+
 /* despacho dos subcomandos de medida; devolve -1 se o comando nao e nosso */
 static int et_cmd(int argc, char **argv) {
     if (argc >= 5 && !strcmp(argv[1], "tiersim") && !strcmp(argv[2], "run")) return ets_run(argv[3], argv[4], argc > 5 ? argv[5] : "trace.bin");
     if (argc >= 4 && !strcmp(argv[1], "tiersim") && !strcmp(argv[2], "sim")) return ets_sim(argv[3]);
     if (argc >= 3 && !strcmp(argv[1], "iobench")) return iob_main(argc, argv);
+    if (argc >= 2 && !strcmp(argv[1], "bundle")) return etb_main(argc, argv);
     return -1;
 }
 
