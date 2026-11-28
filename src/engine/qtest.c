@@ -77,6 +77,12 @@ static int qtest_known(void) {
         if (d != 0.0) bad |= 128;
     }
 #endif
+    {   /* Mamba-2 (granitehybrid): a recorrencia usada em producao (grh_job) contra uma segunda formula em
+           double, escrita em paralelo, 5 passos com estado carregando entre eles. 2026-11-27. */
+        const double d = grh_recur_selftest();
+        printf("Mamba-2: recorrencia de producao x formula em double (5 passos, 3 cabecas): maior diferenca %.2e: %s\n", d, d < 1e-4 ? "OK" : "FALHOU");
+        if (d >= 1e-4) bad |= 256;
+    }
     return bad;
 }
 
@@ -216,6 +222,21 @@ static int selftest(Model *m) {
             selftest_mat("shexp_down", &L->sd, d, c->n_shared * H, &worst);
         }
     }
+    if (c->gr) {    /* granitehybrid: as duas camadas amostradas acima sao Mamba-2; confere tambem uma de atencao */
+        int la = -1;
+        for (int l = 0; l < c->n_layers; l++) if (!m->layers[l].lin) { la = l; break; }
+        if (la >= 0) {
+            const Layer *L = &m->layers[la];
+            const int qd = c->n_heads * c->hd;
+            printf(" camada %d (atencao)\n", la);
+            selftest_mat("attn_q", &L->wq, qd, d, &worst);
+            selftest_mat("attn_k", &L->wk, kvd, d, &worst);
+            selftest_mat("attn_v", &L->wv, kvd, d, &worst);
+            selftest_mat("attn_out", &L->wo, d, qd, &worst);
+            selftest_mat("exp0_gate", &L->eg[0], H, d, &worst);
+            selftest_mat("exp0_down", &L->ed[0], d, H, &worst);
+        }
+    }
     int ok = worst < 1e-4 && worst_int < 1e-4;
     printf("produtos: %s (pior erro relativo: exato %.2e, CPU inteiro %.2e)\n", ok ? "OK" : "FALHOU", worst, worst_int);
     if (gpu.vk && !vkg.on) printf("Vulkan: grafo na CPU (verificacoes de grafo completo puladas)\n");
@@ -302,6 +323,26 @@ static int selftest(Model *m) {
         printf("gemma4 lote (g4_layers_n) x token a token (g4_layer, %d tokens): maior diferenca=%.3e (maior |logit|=%.2f), argmax %d x %d: %s\n",
                N, md, mr, ag, at, okg ? "OK" : "FALHOU");
         ok = ok && okg;
+        free(lg_seq);
+    }
+    if (c->gr) {    /* granitehybrid: logits em lote (prompt, grh_layers_n com B>1) x token a token (B=1), mesma sequencia
+                       desde pos0=0 (reseta o estado do Mamba-2 nas duas pontas). Sem GPU ainda (so CPU). */
+        const int N = 23, V = c->vocab;
+        int toks[N];
+        for (int i = 0; i < N; i++) toks[i] = (int)((1000003u * (i + 1)) % (unsigned)V);
+        float *lg_seq = xalloc(V, sizeof(float)), *lg_tok;
+        memcpy(lg_seq, forward_seq(m, toks, N, 0, 1), V * sizeof(float));
+        for (int i = 0; i < N; i++) lg_tok = forward(m, toks[i], i, i == N - 1);
+        int ag = 0, at = 0; double md = 0.0, mr = 0.0;
+        for (int i = 0; i < V; i++) {
+            if (lg_seq[i] > lg_seq[ag]) ag = i;
+            if (lg_tok[i] > lg_tok[at]) at = i;
+            if (fabs(lg_seq[i] - lg_tok[i]) > md) md = fabs(lg_seq[i] - lg_tok[i]);
+            if (fabs(lg_seq[i]) > mr) mr = fabs(lg_seq[i]);
+        }
+        const int oke = ag == at && md < 1e-3 * (mr + 1.0);
+        printf("CPU em lote       x CPU token a token (logits, %d tokens): maior diferenca=%.3e (maior |logit|=%.2f), argmax %d x %d: %s\n", N, md, mr, ag, at, oke ? "OK" : "FALHOU");
+        ok = ok && oke;
         free(lg_seq);
     }
     return ok ? 0 : 1;

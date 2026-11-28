@@ -1265,6 +1265,30 @@ static int run_main(int argc, char **argv) {
         return snapreplay(&m, argc - 3, argv + 3);
     }
     if (argc >= 2 && strcmp(argv[1], "attbench") == 0) return attbench(argc - 2, argv + 2);
+    if (argc >= 3 && strcmp(argv[1], "rawlogits") == 0) {
+        /* depuracao: roda N tokens sinteticos (ids = (1000003*(i+1)) % vocab, sem tokenizador) e imprime
+           argmax, os 8 maiores logits e uma soma de controle, para comparar com outro motor na mesma entrada
+           (bypassa o tokenizador de proposito: so confere a matematica do modelo). */
+        Model m; memset(&m, 0, sizeof m);
+        load_model(&m, argv[2]);
+        const int N = argc >= 4 ? atoi(argv[3]) : 23, V = m.cfg.vocab;
+        int *toks = xalloc(N, sizeof(int));
+        for (int i = 0; i < N; i++) toks[i] = (int)((1000003u * (i + 1)) % (unsigned)V);
+        float *lg = forward_seq(&m, toks, N, 0, 1);
+        int idx[8]; for (int k = 0; k < 8; k++) idx[k] = -1;
+        double chk = 0.0;
+        for (int i = 0; i < V; i++) {
+            chk += (double)lg[i] * (double)(i % 97 + 1);
+            int j = 7;
+            if (idx[7] >= 0 && lg[i] <= lg[idx[7]]) continue;
+            while (j > 0 && (idx[j - 1] < 0 || lg[idx[j - 1]] < lg[i])) { idx[j] = idx[j - 1]; j--; }
+            idx[j] = i;
+        }
+        printf("rawlogits: N=%d vocab=%d checksum=%.6f\n", N, V, chk);
+        for (int k = 0; k < 8; k++) if (idx[k] >= 0) printf("  top%d: token=%d logit=%.6f\n", k, idx[k], lg[idx[k]]);
+        free(toks);
+        return 0;
+    }
     if (argc >= 3 && strcmp(argv[1], "selftest") == 0) {
         Model m; memset(&m, 0, sizeof m);
         load_model(&m, argv[2]);

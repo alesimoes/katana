@@ -21,6 +21,7 @@
 #include "engine/qwen4exp.c"           /* qwen4exp na CPU: 4 ramos residuais, atencao esparsa, n-gramas no disco */
 #include "engine/sampler.c"            /* amostrador: min-p, penalidades, typical-p, mirostat v2, DRY, logit_bias, seed (katana samplertest) */
 #include "engine/forward.c"            /* camadas na CPU em lote, forward, amostragem, decodificacao especulativa, generate */
+#include "engine/granite.c"            /* granitehybrid: Mamba-2 (SSD) intercalado com atencao, MoE em toda camada */
 #include "engine/lookup.c"             /* decodificacao especulativa por consulta ao contexto (KATANA_LOOKUP) */
 #include "engine/qtest.c"              /* katana qtest: teste dos tipos de quantizacao */
 #include "engine/expert_pf.c"            /* prefetch dos especialistas frios para a cache da CPU durante a espera pela GPU */

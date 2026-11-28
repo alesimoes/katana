@@ -1,3 +1,6 @@
+/* granitehybrid: definida em engine/granite.c (incluido depois deste arquivo, pois reusa matmat/AttJob/att_job daqui) */
+static void grh_layers_n(Model *m, int l0, int l1, int pos0, int B, float *X);
+
 /* ---------- camadas na CPU em lote (prompt) ----------
    B tokens de uma vez: cada produto le a matriz uma vez para os B tokens (em vez de uma vez por token),
    o que tira o gargalo de memoria do prompt. As ativacoes sao quantizadas uma vez por token e cada
@@ -286,6 +289,7 @@ static void qn_layers_n(Model *m, int l0, int l1, int pos0, int B, float *X) {
 /* gemma4: logits finais limitados por softcap * tanh(logit / softcap) */
 static void logit_softcap(const Model *m, float *lg) {
     const float s = m->cfg.softcap;
+    if (lg && m->cfg.logit_scale > 0.0f) for (int i = 0; i < m->cfg.vocab; i++) lg[i] /= m->cfg.logit_scale;     /* granitehybrid */
     if (!lg || s <= 0.0f) return;
     for (int i = 0; i < m->cfg.vocab; i++) lg[i] = s * tanhf(lg[i] / s);
 }
@@ -331,6 +335,7 @@ static float *forward(Model *m, int token, int pos, int want_logits) {
     const Config *c = &m->cfg;
     if (vis_rp || token >= VIS_BASE) vis_seq(m, &token, 1, pos);
     if (c->q4e) return q4_forward(m, &token, 1, pos, want_logits);
+    if (c->gr) { embed_row(m, m->x, token); grh_layers_n(m, 0, c->n_layers, pos, 1, m->x); return want_logits ? cpu_head(m) : NULL; }
     if (vkg.on && !gpu.force_cpu) return vk_forward_1(m, token, pos, want_logits);
     if (gpu.n_gl > 0 && !gpu.force_cpu) return gpu_forward_n(m, &gpu.set[gpu.n_sets - 1], &token, pos, want_logits);
     embed_row(m, m->x, token);
@@ -381,6 +386,19 @@ static float *forward_seq_in(Model *m, const int *toks, int n, int pos0, int wan
     if (lk_on_) lk_hook(m, toks, n, pos0);
     vis_seq(m, toks, n, pos0);      /* sem imagem nenhuma, nao faz nada */
     if (m->cfg.q4e) return q4_forward(m, toks, n, pos0, want_logits);
+    if (m->cfg.gr) {
+        const int d = m->cfg.dim;
+        static float *X;
+        if (!X) X = xalloc((size_t)GPU_BMAX * d, sizeof(float));
+        while (i < n) {
+            const int B = n - i < GPU_BMAX ? n - i : GPU_BMAX;
+            for (int t = 0; t < B; t++) embed_row(m, X + (size_t)t * d, toks[i + t]);
+            grh_layers_n(m, 0, m->cfg.n_layers, pos0 + i, B, X);
+            i += B;
+        }
+        memcpy(m->x, X + (size_t)((n - 1) % GPU_BMAX) * d, d * sizeof(float));
+        return want_logits ? cpu_head(m) : NULL;
+    }
     if (vkml.ok && !gpu.force_cpu && vk_batch_min() <= n) {      /* MLA em Vulkan (modo hibrido): lote proprio */
         while (n - i >= vk_batch_min()) {
             const int nb = n - i < vkml.P ? n - i : vkml.P;

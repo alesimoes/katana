@@ -901,6 +901,7 @@ static void gpu_setup(Model *m) {
     const Config *c = &m->cfg;
     if (c->go) { fprintf(stderr, "GPU: gpt-oss ainda so na CPU (hibrido Vulkan pendente)\n"); return; }
     if ((c->glm || c->glmoe) && !getenv("KATANA_GLM_GPU")) { fprintf(stderr, "GPU: glm4 ainda so na CPU\n"); return; }
+    if (c->gr) { fprintf(stderr, "GPU: granitehybrid ainda so na CPU (Mamba-2 so tem caminho na CPU por enquanto)\n"); return; }
     if (c->g4 && (c->ple_dim || c->kv_shared_n)) {      /* E2B/E4B: mla_gpu_upload e vk_g4_build supoem Hd e K/V uniformes por camada */
         fprintf(stderr, "GPU: gemma4 E2B/E4B (PLE, K/V compartilhado) ainda so na CPU\n"); return;
     }

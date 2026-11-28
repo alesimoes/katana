@@ -58,6 +58,12 @@ typedef struct {
        K/V proprios (kv_shared_layers): reusam o cache da ultima camada propria do mesmo tipo (local/global). */
     int ple_dim;        /* largura do embedding por camada (embedding_length_per_layer_input); 0 = sem PLE */
     int kv_shared_n;    /* quantas camadas no fim compartilham K/V (attention.shared_kv_layers) */
+    /* granitehybrid: Mamba-2 (SSD) intercalado com atencao completa, MoE em toda camada. A camada e
+       recorrente quando head_count_kv[camada] == 0 no GGUF (lista lida em g4_nkv, reaproveitada). */
+    int gr;                /* arquitetura granitehybrid */
+    float attn_scale;      /* escala de q.k pronta do GGUF (substitui 1/sqrt(hd)); 0 = usa 1/sqrt(hd) */
+    float residual_scale;  /* multiplica a saida de cada sub-camada (atencao/ssm e ffn) antes de somar ao residuo */
+    float logit_scale;     /* divide os logits finais; 0 = sem */
     char arch[64];
 } Config;
 
@@ -98,6 +104,10 @@ typedef struct {
     float *per_layer_post_norm;               /* [dim] */
     /* gpt-oss */
     float *sinks, *router_b, *eg_b, *eu_b, *ed_b;   /* sink por cabeca; vies do roteador; vies dos especialistas gate/up/down */
+    /* granitehybrid: camada Mamba-2 (reusa wqkv para ssm_in e wssm_out, conv_w/ssm_a/dt_bias/ssm_norm, todos
+       ja existentes acima para o DeltaNet; os dois campos abaixo sao exclusivos do Mamba-2) */
+    float *conv_b;      /* ssm_conv1d.bias */
+    float *ssm_d;       /* ssm_d: termo de salto D, um escalar por cabeca */
 } Layer;
 
 typedef struct {
@@ -1054,6 +1064,10 @@ static void load_model(Model *m, const char *path) {
             else if (key_ends(k, kl, ".rope.scaling.yarn_log_multiplier")) c->yarn_logmul = (float)v;
             else if (key_ends(k, kl, ".rope.freq_base")) c->rope_base = (float)v;
             else if (key_ends(k, kl, ".layer_norm_rms_epsilon")) c->eps = (float)v;
+            else if (key_ends(k, kl, ".attention.scale")) c->attn_scale = (float)v;
+            else if (key_ends(k, kl, ".embedding_scale")) c->emb_scale = (float)v;
+            else if (key_ends(k, kl, ".residual_scale")) c->residual_scale = (float)v;
+            else if (key_ends(k, kl, ".logit_scale")) c->logit_scale = (float)v;
             else if (key_is(k, kl, "tokenizer.ggml.bos_token_id")) c->bos = (int)v;
             else if (key_is(k, kl, "tokenizer.ggml.eos_token_id")) c->eos = (int)v;
             else if (key_is(k, kl, "tokenizer.ggml.add_bos_token")) c->add_bos = (int)v;
@@ -1087,6 +1101,7 @@ static void load_model(Model *m, const char *path) {
     }
     else if (strcmp(c->arch, "glm4") == 0) { c->glm = 1; }       /* RoPE NORM (pares consecutivos), parcial */
     else if (strcmp(c->arch, "glm4moe") == 0) { c->glmoe = 1; c->rope_neox = 1; c->moe_norm = 1; }   /* RoPE NEOX parcial; roteador sigmoide+vies, compartilhado */
+    else if (strcmp(c->arch, "granitehybrid") == 0) { c->gr = 1; c->moe_norm = 1; }   /* RoPE NORM (pares); Mamba-2 nas camadas com head_count_kv == 0; MoE softmax renormalizado em toda camada */
     else if (strcmp(c->arch, "llama") != 0)
         fprintf(stderr, "Aviso: arquitetura '%s' nao testada (so 'llama' e 'qwen2' por enquanto)\n", c->arch);
     if (c->n_nextn > 0 && c->n_nextn < c->n_layers) c->n_layers -= c->n_nextn;   /* camadas MTP/nextn: tensores existem mas nao sao processados */
@@ -1101,8 +1116,9 @@ static void load_model(Model *m, const char *path) {
         if (!c->hd_v || c->hd_key <= c->rope_dim || c->rope_dim % 2) die("MLA: dimensoes invalidas");
     }
     if (c->ssm_inner) {
-        if (!c->attn_every || !c->ssm_conv || !c->ssm_state || !c->ssm_groups || !c->ssm_rank || c->ssm_rank % c->ssm_groups
-            || c->ssm_inner % c->ssm_rank || c->ssm_conv > 8) die("DeltaNet: dimensoes invalidas");
+        /* granitehybrid: a camada recorrente nao e periodica (attn_every), e sim pela lista head_count_kv (g4_nkv) */
+        if ((!c->gr && !c->attn_every) || !c->ssm_conv || !c->ssm_state || !c->ssm_groups || !c->ssm_rank || c->ssm_rank % c->ssm_groups
+            || c->ssm_inner % c->ssm_rank || c->ssm_conv > 8) die("Mamba/DeltaNet: dimensoes invalidas");
     }
     c->hidden_dense = c->hidden;
     if (c->n_expert) {
@@ -1244,6 +1260,56 @@ static void load_model(Model *m, const char *path) {
                     if (gu.q) { L->eg[e].q += e * 2 * H * gu.stride; L->eu[e].q += (e * 2 + 1) * H * gu.stride; }
                     else { L->eg[e].f += e * 2 * H * d; L->eu[e].f += (e * 2 + 1) * H * d; }
                     if (dn.q) L->ed[e].q += e * d * dn.stride; else L->ed[e].f += e * d * H;
+                }
+            }
+            continue;
+        }
+        if (c->gr) {
+            /* head_count_kv desta camada (g4_nkv, lido de forma generica mais acima): 0 = Mamba-2, senao atencao */
+            L->lin = l < g4_nkv_n ? g4_nkv[l] == 0 : 1;
+            if (L->lin) L->lin_i = m->n_lin++;
+            V1(attn_norm, "attn_norm.weight");
+            if (L->lin) {
+                const size_t nh = c->ssm_rank, ds = c->ssm_state, ng = c->ssm_groups, di = c->ssm_inner;
+                const size_t d_in_proj = 2 * di + 2 * ng * ds + nh, conv_dim = di + 2 * ng * ds;
+                M2(wqkv, "ssm_in.weight", d_in_proj, d);
+                snprintf(nm, sizeof nm, "blk.%d.ssm_conv1d.weight", l); L->conv_w = get_tensor(&ts, nm, conv_dim * c->ssm_conv, 1, np);
+                snprintf(nm, sizeof nm, "blk.%d.ssm_conv1d.bias", l);   L->conv_b = get_tensor(&ts, nm, conv_dim, 0, np);
+                snprintf(nm, sizeof nm, "blk.%d.ssm_dt.bias", l);       L->dt_bias = get_tensor(&ts, nm, nh, 1, np);
+                snprintf(nm, sizeof nm, "blk.%d.ssm_a", l);             L->ssm_a = get_tensor(&ts, nm, nh, 1, np);
+                snprintf(nm, sizeof nm, "blk.%d.ssm_d", l);             L->ssm_d = get_tensor(&ts, nm, nh, 1, np);
+                snprintf(nm, sizeof nm, "blk.%d.ssm_norm.weight", l);   L->ssm_norm = get_tensor(&ts, nm, di, 1, np);
+                M2(wssm_out, "ssm_out.weight", d, di);
+            } else {
+                const size_t nkv_l = l < g4_nkv_n && g4_nkv[l] > 0 ? (size_t)g4_nkv[l] : (size_t)c->n_kv;
+                const size_t qd_l = (size_t)c->n_heads * c->hd, kvd_l = nkv_l * c->hd;
+                M2(wq, "attn_q.weight", qd_l, d);
+                M2(wk, "attn_k.weight", kvd_l, d);
+                M2(wv, "attn_v.weight", kvd_l, d);
+                M2(wo, "attn_output.weight", d, qd_l);
+            }
+            V1(ffn_norm, "ffn_norm.weight");
+            if (c->n_expert) {
+                /* MoE em toda camada: tensores empilhados, o especialista e ocupa a fatia e (mesmo layout do ramo generico) */
+                const size_t E = c->n_expert;
+                M2(router, "ffn_gate_inp.weight", E, d);
+                Mat sg, su, sd;
+                snprintf(nm, sizeof nm, "blk.%d.ffn_gate_exps.weight", l); sg = get_mat(&ts, nm, E * H, d, 1, np);
+                snprintf(nm, sizeof nm, "blk.%d.ffn_up_exps.weight", l);   su = get_mat(&ts, nm, E * H, d, 1, np);
+                snprintf(nm, sizeof nm, "blk.%d.ffn_down_exps.weight", l); sd = get_mat(&ts, nm, E * d, H, 1, np);
+                L->eg = xalloc(E, sizeof(Mat)); L->eu = xalloc(E, sizeof(Mat)); L->ed = xalloc(E, sizeof(Mat));
+                for (size_t e = 0; e < E; e++) {
+                    L->eg[e] = sg; L->eu[e] = su; L->ed[e] = sd;
+                    if (sg.q) L->eg[e].q += e * H * sg.stride; else L->eg[e].f += e * H * d;
+                    if (su.q) L->eu[e].q += e * H * su.stride; else L->eu[e].f += e * H * d;
+                    if (sd.q) L->ed[e].q += e * d * sd.stride; else L->ed[e].f += e * d * H;
+                }
+                L->w_gate = L->eg[0]; L->w_up = L->eu[0]; L->w_down = L->ed[0];    /* para os testes por matriz */
+                if (c->n_shared) {
+                    const size_t Hs = (size_t)c->n_shared * H;
+                    M2(sg, "ffn_gate_shexp.weight", Hs, d);
+                    M2(su, "ffn_up_shexp.weight", Hs, d);
+                    M2(sd, "ffn_down_shexp.weight", d, Hs);
                 }
             }
             continue;
