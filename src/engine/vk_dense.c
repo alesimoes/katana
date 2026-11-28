@@ -16,7 +16,9 @@ typedef struct {
     KvkBuf part;                    /* pedacos do contexto da atencao de um token (split-K) */
     int chunk, nchunk;              /* posicoes por pedaco e numero de pedacos (1 = sem divisao, sem att1r) */
     KvkRec g[2];                    /* grafo gravado: [0] sem a projecao final, [1] com ela */
-    int coop, sg32;                 /* produto cooperativo fp16 disponivel; subgrupo de 32 */
+    int coop, coopmat, sg32, force_tiled;  /* coop: lote Vulkan viavel (coopmat OU ladrilho fp16 sem coopmat);
+                                               coopmat: matriz cooperativa fp16 16x16x16 de verdade (escolhe o shader);
+                                               force_tiled: KATANA_VK_FORCE_TILED=1 (forca o ladrilho mesmo com coopmat, so para validar) */
     int P;                          /* maior lote por passada em Vulkan (0 = so token a token) */
     int g_ok[2];
     double t_emb, t_sub, t_wait;    /* embedding+escrita, enfileirar/submeter, espera+leitura */
@@ -325,6 +327,9 @@ static struct {
 static const int vk_mmt[7] = { 4, 3, 0, 2, 1, 4, 5 };
 /* variantes: 0 64x64, 1 64x32w4 (so plano), 2 64x16w4 (so plano), 3 64x32 (glu), 4 64x16 (glu) */
 static const int vk_mm_bn[5] = { 64, 32, 16, 32, 16 };
+/* true: usa os shaders de matriz cooperativa (coopmat de verdade e sem KATANA_VK_FORCE_TILED); false: usa os
+   shaders _tiled (registro bloqueado, sem coopMat - tools/vkgemm_mobile/tiled_vec.comp) */
+static inline int vk_use_coopmat(void) { return vkg.coopmat && !vkg.force_tiled; }
 static const uint32_t *vk_mm_spv(int t, int v, int glu, size_t *n) {
 #define MMS(T) \
     { { mm_t##T##_64x64_g0_spv, sizeof mm_t##T##_64x64_g0_spv }, { mm_t##T##_64x32w4_g0_spv, sizeof mm_t##T##_64x32w4_g0_spv }, \
@@ -332,10 +337,17 @@ static const uint32_t *vk_mm_spv(int t, int v, int glu, size_t *n) {
       { mm_t##T##_64x32_g1_spv, sizeof mm_t##T##_64x32_g1_spv }, { mm_t##T##_64x16_g1_spv, sizeof mm_t##T##_64x16_g1_spv } }
     static const struct { const uint32_t *p; size_t n; } tab[6][6] = { MMS(0), MMS(1), MMS(2), MMS(3), MMS(4), MMS(5) };
 #undef MMS
+#define MMST(T) \
+    { { mm_t##T##_64x64_g0_tiled_spv, sizeof mm_t##T##_64x64_g0_tiled_spv }, { mm_t##T##_64x32w4_g0_tiled_spv, sizeof mm_t##T##_64x32w4_g0_tiled_spv }, \
+      { mm_t##T##_64x16w4_g0_tiled_spv, sizeof mm_t##T##_64x16w4_g0_tiled_spv }, { mm_t##T##_64x64_g1_tiled_spv, sizeof mm_t##T##_64x64_g1_tiled_spv }, \
+      { mm_t##T##_64x32_g1_tiled_spv, sizeof mm_t##T##_64x32_g1_tiled_spv }, { mm_t##T##_64x16_g1_tiled_spv, sizeof mm_t##T##_64x16_g1_tiled_spv } }
+    static const struct { const uint32_t *p; size_t n; } tabt[6][6] = { MMST(0), MMST(1), MMST(2), MMST(3), MMST(4), MMST(5) };
+#undef MMST
     /* indice: plano 0,1,2 = 64x64, 64x32w4, 64x16w4; glu 3,4,5 = 64x64, 64x32, 64x16 */
     const int ix = glu ? (v == 0 ? 3 : v == 3 ? 4 : 5) : v;
-    *n = tab[t][ix].n;
-    return tab[t][ix].p;
+    const int ic = vk_use_coopmat();
+    *n = ic ? tab[t][ix].n : tabt[t][ix].n;
+    return ic ? tab[t][ix].p : tabt[t][ix].p;
 }
 
 /* regra de escolha do ladrilho (tools/vkq4k/NOTAS.md): ate 16 tokens 64x16; glu acima disso 64x32 (2x2);
@@ -380,11 +392,24 @@ static int vk_mm_pw(uint32_t kind, KvkBuf wb, uint32_t woff, size_t wpr, KvkBuf 
                                                                           { MMG(0), MMG(1), MMG(2), MMG(3), MMG(4), MMG(5) } };
 #undef MMX
 #undef MMG
+    /* mesmas variantes, sem matriz cooperativa (sufixo _tiled: registro bloqueado, tools/vkgemm_mobile/tiled_vec.comp) */
+#define MMXT(T, S) { { mm_t##T##_64x64_##S##_tiled_spv, sizeof mm_t##T##_64x64_##S##_tiled_spv }, { mm_t##T##_64x32w4_##S##_tiled_spv, sizeof mm_t##T##_64x32w4_##S##_tiled_spv }, \
+                     { mm_t##T##_64x16w4_##S##_tiled_spv, sizeof mm_t##T##_64x16w4_##S##_tiled_spv } }
+#define MMGT(T) { { mm_t##T##_64x64_gx_tiled_spv, sizeof mm_t##T##_64x64_gx_tiled_spv }, { mm_t##T##_64x32_gx_tiled_spv, sizeof mm_t##T##_64x32_gx_tiled_spv }, \
+                  { mm_t##T##_64x16_gx_tiled_spv, sizeof mm_t##T##_64x16_gx_tiled_spv } }
+    static const struct { const uint32_t *p; size_t n; } tabt[3][6][3] = { { MMXT(0, ws), MMXT(1, ws), MMXT(2, ws), MMXT(3, ws), MMXT(4, ws), MMXT(5, ws) },
+                                                                           { MMXT(0, xs), MMXT(1, xs), MMXT(2, xs), MMXT(3, xs), MMXT(4, xs), MMXT(5, xs) },
+                                                                           { MMGT(0), MMGT(1), MMGT(2), MMGT(3), MMGT(4), MMGT(5) } };
+#undef MMXT
+#undef MMGT
     const int glu = xs == 2, ki = vk_kind_idx(kind), t = vk_mmt[ki], v0 = vk_tile(ki, B, glu);
     const int v = glu ? (v0 == 0 ? 0 : v0 == 3 ? 1 : 2) : v0;      /* glu: 64x64, 64x32, 64x16 */
     KvkPipe *pp = &vkb.mmx[xs][t][v];
     if (!pp->p) {
-        *pp = kvk_pipe_create(tab[xs][t][v].p, tab[xs][t][v].n, 3, 32, NULL, NULL, 0);
+        const int ic = vk_use_coopmat();
+        const uint32_t *spv = ic ? tab[xs][t][v].p : tabt[xs][t][v].p;
+        const size_t spn = ic ? tab[xs][t][v].n : tabt[xs][t][v].n;
+        *pp = kvk_pipe_create(spv, spn, 3, 32, NULL, NULL, 0);
         if (!pp->p) { fprintf(stderr, "Vulkan: pipeline do produto em lote (XS) falhou: %s\n", kvk_error()); return 0; }
     }
     const uint32_t ad = (uint32_t)add | (glu && g_gelu ? 2u : 0u);     /* bit 1: GELU no glu (gemma4) */
@@ -680,12 +705,23 @@ static int vk_setup(Model *m) {
     if (!kvk_init_wait(&I)) { fprintf(stderr, "Vulkan: indisponivel (%s)\n", kvk_error()); return 0; }
     gpu.vk = 1;
     vkg.sg32 = I.subgroup_size == 32;
-    vkg.coop = 0;      /* produto 16x16x16 fp16 x fp16 -> fp32 no escopo de subgrupo (VK_COMPONENT_TYPE_FLOAT16 = 0, FLOAT32 = 1, SCOPE_SUBGROUP = 3) */
+    vkg.coopmat = 0;      /* produto 16x16x16 fp16 x fp16 -> fp32 no escopo de subgrupo (VK_COMPONENT_TYPE_FLOAT16 = 0, FLOAT32 = 1, SCOPE_SUBGROUP = 3) */
     if (I.coopmat && I.fp16 && I.storage16 && I.max_shared >= 32768)
         for (int i = 0; i < I.n_coop; i++)
             if (I.coop[i].m == 16 && I.coop[i].n == 16 && I.coop[i].k == 16 && I.coop[i].a_type == 0 && I.coop[i].b_type == 0
-                && I.coop[i].c_type == 1 && I.coop[i].r_type == 1 && I.coop[i].scope == 3) vkg.coop = 1;
-    if (!vkg.coop) fprintf(stderr, "Vulkan: sem matriz cooperativa fp16 16x16x16: prompt token a token\n");
+                && I.coop[i].c_type == 1 && I.coop[i].r_type == 1 && I.coop[i].scope == 3) vkg.coopmat = 1;
+    /* sem matriz cooperativa (celular, ex. Xclipse 540): o mesmo ladrilho de mm.comp (memoria compartilhada +
+       leitura vetorizada f16vec4, decodificado por fill()) com o produto 16x16x16 por registro bloqueado em vez
+       de coopMat (tools/vkgemm_mobile/tiled_vec.comp: ~4,1x medido no Xclipse 540 sobre o caminho escalar
+       ingenuo) - vale so para o produto em lote de mm.comp (mm/mm_p/mm_pw); o DeltaNet em lote do qwen35.c
+       (dn_chunk/dn_state) continua exigindo vkg.coopmat de verdade, nao esta coberto por este ladrilho. */
+    const int tiled_ok = I.fp16 && I.storage16 && I.max_shared >= 32768;
+    vkg.coop = vkg.coopmat || tiled_ok;
+    vkg.force_tiled = getenv("KATANA_VK_FORCE_TILED") && atoi(getenv("KATANA_VK_FORCE_TILED")) != 0;   /* so para teste (x86 com coopmat) */
+    if (vkg.force_tiled && !tiled_ok) { fprintf(stderr, "Vulkan: KATANA_VK_FORCE_TILED pedido mas sem fp16/16bit/memoria compartilhada suficiente, ignorado\n"); vkg.force_tiled = 0; }
+    if (!vkg.coop) fprintf(stderr, "Vulkan: sem matriz cooperativa e sem fp16 para o ladrilho: prompt token a token\n");
+    else if (!vkg.coopmat) fprintf(stderr, "Vulkan: sem matriz cooperativa: produto em lote por registro bloqueado (ladrilho fp16, ~4,1x medido no Xclipse 540)\n");
+    else if (vkg.force_tiled) fprintf(stderr, "Vulkan: KATANA_VK_FORCE_TILED=1: produto em lote por registro bloqueado mesmo com matriz cooperativa disponivel (so para validar)\n");
     snprintf(gpu.name, sizeof gpu.name, "%s", I.name);
     gpu.vram = I.vram_bytes;
     gpu.avail0 = kvk_vram_budget();

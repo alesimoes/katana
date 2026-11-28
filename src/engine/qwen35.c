@@ -770,8 +770,10 @@ static int vkq_build(Model *m) {
     const int NK = c->ssm_groups, NV = c->ssm_rank, D = c->ssm_state, K = c->n_used;
     const size_t CH = 2 * (size_t)NK * D + (size_t)NV * D, inner = c->ssm_inner, H = c->hidden, Hs = (size_t)c->n_shared * H;
     if (getenv("KATANA_VK_QN") && atoi(getenv("KATANA_VK_QN")) == 0) return 0;
+    /* dn_chunk/dn_state usam matriz cooperativa de verdade (coopMat, nao o ladrilho _tiled de mm.comp):
+       exige vkg.coopmat, nao so vkg.coop (que tambem aceita o ladrilho fp16 sem coopMat) */
     if (D != 128 || (int)inner != NV * 128 || c->ssm_conv != 4 || c->hd > 256 || c->hd % 32 || !c->attn_gated
-        || c->n_heads % c->n_kv || c->n_heads / c->n_kv > 8 || !vkg.coop || !vkg.sg32 || c->n_used > 16 || d % 64) {
+        || c->n_heads % c->n_kv || c->n_heads / c->n_kv > 8 || !vkg.coopmat || !vkg.sg32 || c->n_used > 16 || d % 64) {
         fprintf(stderr, "Vulkan: qwen35moe com dimensoes fora do grafo (ou sem matriz cooperativa): modo hibrido\n");
         return 0;
     }
