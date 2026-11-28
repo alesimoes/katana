@@ -169,6 +169,10 @@ static int selftest(Model *m) {
     double worst = 0.0;
     srand(1234);
     selftest_mat("tok_emb", &m->tok_emb, c->vocab, d, &worst);
+    if (c->ple_dim) {
+        selftest_mat("ple_tok_embd", &m->ple_tok_embd, c->vocab, (size_t)c->ple_dim * c->n_layers, &worst);
+        selftest_mat("ple_model_proj", &m->ple_model_proj, (size_t)c->ple_dim * c->n_layers, d, &worst);
+    }
     for (int l = 0; l < c->n_layers; l += c->n_layers - 1 > 0 ? c->n_layers - 1 : 1) {
         const Layer *L = &m->layers[l];
         printf(" camada %d\n", l);
@@ -178,10 +182,14 @@ static int selftest(Model *m) {
             selftest_mat("attn_k", &L->wk, hk, d, &worst);
             if (L->wv.q) selftest_mat("attn_v", &L->wv, hk, d, &worst);
             selftest_mat("attn_out", &L->wo, d, qd, &worst);
-            const int Hg = L->eg ? c->hidden_dense : H;
+            const int Hg = L->hidden_l;    /* E2B/E4B: largura do feed-forward denso varia por camada (PLE) */
             selftest_mat("ffn_gate", &L->w_gate, Hg, d, &worst);
             selftest_mat("ffn_up", &L->w_up, Hg, d, &worst);
             selftest_mat("ffn_down", &L->w_down, d, Hg, &worst);
+            if (c->ple_dim) {
+                selftest_mat("ple_inp_gate", &L->per_layer_inp_gate, c->ple_dim, d, &worst);
+                selftest_mat("ple_proj", &L->per_layer_proj, d, c->ple_dim, &worst);
+            }
             if (L->eg) {
                 selftest_mat("exp0_gate", &L->eg[0], H, d, &worst);
                 selftest_mat("exp0_down", &L->ed[0], d, H, &worst);
@@ -251,7 +259,7 @@ static int selftest(Model *m) {
         }
         free(ref);
     }
-    if (!c->n_expert && !c->ssm_inner) {     /* camadas em lote na CPU x as mesmas camadas token a token (produto inteiro nos dois); o qwen35 denso nao usa cpu_layers_n */
+    if (!c->n_expert && !c->ssm_inner && !c->g4) {     /* camadas em lote na CPU x as mesmas camadas token a token (produto inteiro nos dois); o qwen35 denso nao usa cpu_layers_n; gemma4 tem o proprio teste abaixo (g4_layers_n/g4_layer, caminhos diferentes do generico aqui: largura de cabeca e feed-forward por camada, K/V compartilhado) */
         const int N = 23, V = c->vocab;
         float *X = xalloc((size_t)N * d, sizeof(float)), *Y = xalloc((size_t)N * d, sizeof(float));
         gpu.force_cpu = 1; cpu_exact = 0;
@@ -273,6 +281,28 @@ static int selftest(Model *m) {
         printf("CPU em lote       x CPU token a token (%d tokens): maior diferenca de estado=%.3e (maximo %.3e): %s\n", N, md, mx, okb ? "OK" : "FALHOU");
         ok = ok && okb;
         free(X); free(Y);
+    }
+    if (c->g4) {    /* gemma4 E2B/E4B (PLE, K/V compartilhado, feed-forward por camada): g4_layers_n (lote, prompt) x
+                       g4_layer (token a token, geracao) pelo mesmo forward_seq/forward que a producao usa (nao chama
+                       g4_layers_n direto: assim confere tambem o despacho em forward_seq_in, nao so a matematica) */
+        const int N = 23, V = c->vocab;
+        int toks[N];
+        for (int i = 0; i < N; i++) toks[i] = (int)((1000003u * (i + 1)) % (unsigned)V);
+        float *lg_seq = xalloc(V, sizeof(float)), *lg_tok;
+        memcpy(lg_seq, forward_seq(m, toks, N, 0, 1), V * sizeof(float));
+        for (int i = 0; i < N; i++) lg_tok = forward(m, toks[i], i, i == N - 1);
+        int ag = 0, at = 0; double md = 0.0, mr = 0.0;
+        for (int i = 0; i < V; i++) {
+            if (lg_seq[i] > lg_seq[ag]) ag = i;
+            if (lg_tok[i] > lg_tok[at]) at = i;
+            if (fabs(lg_seq[i] - lg_tok[i]) > md) md = fabs(lg_seq[i] - lg_tok[i]);
+            if (fabs(lg_seq[i]) > mr) mr = fabs(lg_seq[i]);
+        }
+        const int okg = ag == at && md < 1e-3 * (mr + 1.0);
+        printf("gemma4 lote (g4_layers_n) x token a token (g4_layer, %d tokens): maior diferenca=%.3e (maior |logit|=%.2f), argmax %d x %d: %s\n",
+               N, md, mr, ag, at, okg ? "OK" : "FALHOU");
+        ok = ok && okg;
+        free(lg_seq);
     }
     return ok ? 0 : 1;
 }

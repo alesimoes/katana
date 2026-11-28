@@ -17,6 +17,9 @@ static int vk_g4_build(Model *m) {
     const size_t d = c->dim, nh = c->n_heads, Hd = c->hidden_dense, E = c->n_expert;
     memset(&vkg4, 0, sizeof vkg4);
     if (getenv("KATANA_VK_G4") && atoi(getenv("KATANA_VK_G4")) == 0) return 0;
+    /* PLE, largura de feed-forward por camada e K/V compartilhado (E2B/E4B) nao tem formula confirmada
+       neste caminho (ele supoe Hd uniforme e wk/wv em toda camada): CPU por enquanto (g4_layer/g4_layers_n) */
+    if (c->ple_dim || c->kv_shared_n) return 0;
     if (!vkg.coop || d % 64 || Hd % 64) return 0;
     size_t qdm = 0, kvm = 0;
 #define MOK(M) ((M).gbuf && gpu_kind(&(M)) != T_Q2_K && gpu_has(&(M)) && (M).gs == 1)

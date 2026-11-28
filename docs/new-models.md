@@ -374,3 +374,108 @@ Checks that remain for the owner's machine once the GPU is free (Gemma 4, real m
    off (desktop) and on.
 4. Compaction time on a long job (live summary against `KATANA_COMPACT_LIVE=0`) and the quality of the summary.
 5. One sub-agent call and one large `Read` note (time, note quality, main context reloaded).
+
+## Gemma 4 E2B in the engine (text only, working since 2026-11-27)
+
+Model: `models/gemma4e2b/model.gguf` (ggml-org/gemma-4-E2B-it-GGUF, Q4_0, 2.84 GB). Same GGUF architecture name
+as the 26B-A4B (`general.architecture = gemma4`), but **dense** (no experts) and with three mechanisms the
+26B-A4B does not use: Per-Layer Embeddings (PLE), K/V shared by the last layers, and a feed-forward width that
+changes partway through the stack. Confirmed by reading the GGUF header directly (`gemma4.*` keys and the tensor
+list, byte for byte) and by comparing, in llama.cpp's public source (`src/models/gemma4.cpp` and `gemma3n.cpp`,
+read only to understand the formula, nothing copied), with the equivalent, already-working 26B-A4B code
+(`src/engine/model.c`, `src/engine/qwen35.c`'s `g4_layer`/`g4_layers_n`). Gemma 3n (llama.cpp's `gemma3n.cpp`) has
+AltUp and LAuReL on top of PLE; Gemma 4 dropped both, confirmed by the GGUF having no `altup_*`/`laurel_*` tensor
+and no such key in the header. Vision and audio (`general.tags = any-to-any` in the GGUF) are out of scope here.
+
+### Metadata and tensors confirmed in the GGUF (35 layers, dim 1536, 4.6B listed, 4628.6M counted by the engine)
+
+| Key | Value | What it is |
+|---|---|---|
+| `gemma4.embedding_length_per_layer_input` | 256 | PLE width per layer (`ple_dim`) |
+| `gemma4.attention.shared_kv_layers` | 20 | last 20 of 35 layers have no own K/V (`kv_shared_n`) |
+| `gemma4.attention.sliding_window_pattern` | array[35], period 5 (4 local + 1 global) | per layer, `swa` |
+| `gemma4.feed_forward_length` | array[35]: 6144 (layers 0-14), 12288 (15-34) | dense feed-forward width, per layer |
+| `gemma4.attention.head_count_kv` | 1 (scalar, not array in this file) | MQA |
+| `gemma4.attention.key_length` / `..._swa` | 512 / 256 | head width, global / local |
+| `gemma4.rope.freq_base` / `..._swa` | 1000000 / 10000 | RoPE base, global / local |
+| `gemma4.final_logit_softcapping` | 30.0 | same mechanism already in `g4_layer`/`cpu_head` |
+
+Tensors (`tools` used to dump them: a small standalone Python GGUF reader, stdlib only, read-only, discarded
+after use): global `per_layer_token_embd.weight` [262144, 8960] (= vocab x `ple_dim*n_layers`),
+`per_layer_model_proj.weight` [8960, 1536], `per_layer_proj_norm.weight` [256]; per layer `blk.N.inp_gate.weight`
+[256, 1536], `blk.N.proj.weight` [1536, 256], `blk.N.post_norm.weight` [1536] (note: this GGUF names the
+per-layer PLE tensors `inp_gate`/`proj`/`post_norm`, not the longer `per_layer_*` names llama.cpp's generic
+tensor table uses). Layers 15-34 have no `attn_k`/`attn_v`/`attn_k_norm` at all; `attn_q`/`attn_q_norm`/
+`attn_output` stay on every layer.
+
+### Formula (llama.cpp `gemma4.cpp`, confirmed working at `src/engine/qwen35.c:g4_ple_prep`/`g4_layer`/`g4_layers_n`)
+
+Per token, once (`g4_ple_prep`, called right after `embed_row`, before any layer): with `x0` = the token
+embedding already scaled by `sqrt(dim)` (same value written to `m->x`/`X`), `E = ple_dim`, `Ln = n_layers`:
+
+```
+raw[l]  = per_layer_token_embd[token][l]        (E values per layer, layer-major)  * sqrt(E)/sqrt(2)
+proj    = per_layer_model_proj @ x0                                  (E*Ln values)
+proj[l] = rmsnorm(proj[l], eps*dim) * (per_layer_proj_norm * 1/sqrt(2))    (no extra scale after: both
+out[l]  = raw[l] + proj[l]                                                  branches already carry the 1/sqrt(2))
+```
+
+Per layer, after the usual attention and feed-forward residual (`x += ffn_out`), a third residual, before
+`out_scale`:
+
+```
+t = gelu(per_layer_inp_gate[l] @ x)      (E values)
+t = t * out[l]                           (the per-token buffer above, this layer's slice)
+t = per_layer_proj[l] @ t                (back to dim)
+t = rmsnorm(t) * per_layer_post_norm[l]
+x = x + t
+x = x * out_scale                        (unchanged: out_scale still applies to the whole layer, PLE included)
+```
+
+K/V sharing: layers from `n_layers - kv_shared_n` on have no own `attn_k`/`attn_v`; each reuses the K/V cache
+of the last earlier layer of the same kind (local or global) — computed once, at load time, in `model.c`'s
+cache-sizing loop (`last_local`/`last_global`), by pointing the shared layer's `kv_off`/`kv_cap` at the donor's.
+No per-token lookup: the forward pass doesn't need to know which layer donated, it just skips computing/writing
+K/V for that layer and reads a cache that was already written earlier **in the same pass**, since donors
+always come before the layers that share from them. Feed-forward width per layer (`Layer.hidden_l`): read
+from the `feed_forward_length` array when present (new array parsing in `model.c`, alongside the existing
+`sliding_window_pattern`/`head_count_kv` one), else the old scalar (26B-A4B, unaffected).
+
+### What stayed on CPU and why
+
+`src/engine/vk_gemma4.c`'s GPU path (`vk_g4_build`) and the generic hybrid upload (`mla_gpu_upload` in
+`shards.c`, despite the name, also used by `gemma4`) assume one feed-forward width and a K/V matrix for every
+layer; neither holds for E2B. Rather than guess a formula for the GPU side, both are turned off for any
+`gemma4` model with `ple_dim` or `kv_shared_n` set (`c->g4 && (c->ple_dim || c->kv_shared_n)`, checked in
+`gpu_setup` and `vk_g4_build`), falling back to the CPU path cleanly (a message, not a crash). The CPU path
+(`g4_layer`, `g4_layers_n`) has no such limit and is what is verified below. Picking up PLE/K-V-sharing on the
+GPU, if wanted later, is new work (not started).
+
+### Numeric verification (`katana selftest`, no reference engine, as the project requires)
+
+- **Exact product vs fast CPU kernels**: every weight matrix, including the new ones (`ple_tok_embd`,
+  `ple_model_proj`, and, per sampled layer, `ple_inp_gate`/`ple_proj`) — worst relative error 2.93e-08 (exact)
+  and 1.45e-06 (CPU integer path), same order as every other working architecture. `qtest.c`'s generic
+  "layers in batch vs token by token" check was extended to use `Layer.hidden_l` (was the single
+  `hidden_dense`, wrong for a layer with the smaller width) and now also runs the PLE tensors.
+- **Batch (`g4_layers_n`, prompt) vs token by token (`g4_layer`, generation)**, through the real
+  `forward_seq`/`forward` dispatch (not a direct call, so the dispatch itself is covered too): 23 tokens,
+  **0.000e+00 difference**, same argmax. Added as a new `qtest.c` check (`c->g4` block, mirrors the existing
+  `c->gr`/granite one); the old generic batch-vs-token check (`cpu_layers_n` vs `cpu_layers`) does not know
+  about `gemma4`'s per-layer head width/FFN width/shared K/V and was excluded for `c->g4` (`&& !c->g4`), since
+  it would read past a layer's real tensor size or dereference the empty K/V of a shared layer.
+- **Regression**: the 26B-A4B (`models/gemma-4-26B-A4B-it-UD-Q4_K_M.gguf`) still passes every check above
+  unchanged (25233.1M parameters, same as before; GPU hybrid still engages for it, since it has neither PLE nor
+  shared K/V).
+- **End to end**: `katana run models/gemma4e2b/model.gguf "The capital of Japan is"` -> `Tokyo.`;
+  `"2 + 2 ="` -> `4\n\nThis is a simple arithmetic example.`; `"List three colors."` -> `Red, Blue, Green`.
+  Coherent, correct, stops at EOS. This is the actual logits-to-text check the project asks for, since there is
+  no reference engine to diff against.
+
+### Left for later (not started)
+
+- **Vision and audio** (the "any-to-any" tag in the GGUF): need the per-layer image/audio embedding tables and
+  the encoders; this GGUF only ships the text tower. Out of scope for this pass by request.
+- **GPU (Vulkan) for E2B/E4B**: see above; falls back to CPU today.
+- **`katana pack`/shards, `katana tune`, the expert-cache machinery**: not applicable (no experts) or not
+  exercised for this model yet.

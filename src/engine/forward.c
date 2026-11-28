@@ -334,6 +334,7 @@ static float *forward(Model *m, int token, int pos, int want_logits) {
     if (vkg.on && !gpu.force_cpu) return vk_forward_1(m, token, pos, want_logits);
     if (gpu.n_gl > 0 && !gpu.force_cpu) return gpu_forward_n(m, &gpu.set[gpu.n_sets - 1], &token, pos, want_logits);
     embed_row(m, m->x, token);
+    if (c->g4 && c->ple_dim) g4_ple_prep(m, token, m->x, m->g4_ple);
     cpu_layers(m, 0, c->n_layers, pos);
     return want_logits ? cpu_head(m) : NULL;
 }
@@ -425,7 +426,10 @@ static float *forward_seq_in(Model *m, const int *toks, int n, int pos0, int wan
         int last = 0;
         while (i < n) {
             const int B = n - i < G4_NB ? n - i : G4_NB;
-            for (int t = 0; t < B; t++) embed_row(m, X + (size_t)t * d, toks[i + t]);
+            for (int t = 0; t < B; t++) {
+                embed_row(m, X + (size_t)t * d, toks[i + t]);
+                if (m->cfg.ple_dim) g4_ple_prep(m, toks[i + t], X + (size_t)t * d, m->g4_ple + (size_t)t * m->cfg.n_layers * m->cfg.ple_dim);
+            }
             g4_layers_n(m, pos0 + i, B, X);
             last = B - 1; i += B;
         }

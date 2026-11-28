@@ -1595,8 +1595,8 @@ static void matmat(float *out, const Mat *W, const float *X, XQ *xqs, int *prepa
    lote; os pares (token, especialista) da camada saem num despacho so. X: B x dim, atualizado no lugar. */
 static void g4_layers_n(Model *m, int pos0, int B, float *X) {
     const Config *c = &m->cfg;
-    const int d = c->dim, nh = c->n_heads, K = c->n_used, Hd = c->hidden_dense;
-    static float *Xb, *X2, *Q, *KK, *VV, *O, *HB, *HB2, *YA, *YB, *OUTS;
+    const int d = c->dim, nh = c->n_heads, K = c->n_used, Hd_max = c->hidden_dense;
+    static float *Xb, *X2, *Q, *KK, *VV, *O, *HB, *HB2, *YA, *YB, *OUTS, *PT, *PT2;
     static XQ xqs[G4_NB];
     static int ex[G4_NB * MOE_KMAX], xi[G4_NB * MOE_KMAX]; static float ew[G4_NB * MOE_KMAX];
     if (B > G4_NB) die("g4_layers_n: lote grande demais");
@@ -1604,32 +1604,43 @@ static void g4_layers_n(Model *m, int pos0, int B, float *X) {
         const size_t qd = (size_t)nh * c->hd, kvd = (size_t)c->n_kv * c->hd;
         Xb = xalloc((size_t)G4_NB * d, 4); X2 = xalloc((size_t)G4_NB * d, 4); YA = xalloc((size_t)G4_NB * d, 4); YB = xalloc((size_t)G4_NB * d, 4);
         Q = xalloc(G4_NB * qd, 4); O = xalloc(G4_NB * qd, 4); KK = xalloc(G4_NB * kvd, 4); VV = xalloc(G4_NB * kvd, 4);
-        HB = xalloc((size_t)G4_NB * Hd, 4); HB2 = xalloc((size_t)G4_NB * Hd, 4);
+        HB = xalloc((size_t)G4_NB * Hd_max, 4); HB2 = xalloc((size_t)G4_NB * Hd_max, 4);
         OUTS = xalloc((size_t)G4_NB * K * d, 4);
+        if (c->ple_dim) { PT = xalloc((size_t)G4_NB * c->ple_dim, 4); PT2 = xalloc((size_t)G4_NB * d, 4); }
     }
     for (int l = 0; l < c->n_layers; l++) {
         const Layer *L = &m->layers[l];
-        const int hd = L->hd_l, nkv = L->nkv_l, qd = nh * hd, kvd = nkv * hd, half = hd / 2, cap = L->kv_cap;
+        const int hd = L->hd_l, nkv = L->nkv_l, qd = nh * hd, kvd = nkv * hd, half = hd / 2, cap = L->kv_cap, Hd = L->hidden_l;
         const float *fr = L->swa ? m->rope_freq_swa : m->rope_freq;
         int prep = 0;
         for (int t = 0; t < B; t++) rmsnorm(Xb + (size_t)t * d, X + (size_t)t * d, L->attn_norm, d, c->eps);
         matmat(Q, &L->wq, Xb, xqs, &prep, B, qd, d);
-        matmat(KK, &L->wk, Xb, xqs, &prep, B, kvd, d);
-        if (L->wv.q || L->wv.f) matmat(VV, &L->wv, Xb, xqs, &prep, B, kvd, d);
-        else memcpy(VV, KK, (size_t)B * kvd * sizeof(float));
         float *kb = m->kcache ? m->kcache + L->kv_off : NULL, *vb = m->vcache ? m->vcache + L->kv_off : NULL;
         uint16_t *kh = m->kh ? m->kh + L->kv_off : NULL, *vh = m->vh ? m->vh + L->kv_off : NULL;
+        if (!L->kv_shared) {
+            prep = 0;   /* K/V tem a propria entrada ja quantizada (Xb e a mesma, mas matmat reusa xqs so dentro do mesmo B) */
+            matmat(KK, &L->wk, Xb, xqs, &prep, B, kvd, d);
+            if (L->wv.q || L->wv.f) matmat(VV, &L->wv, Xb, xqs, &prep, B, kvd, d);
+            else memcpy(VV, KK, (size_t)B * kvd * sizeof(float));
+            for (int t = 0; t < B; t++) {
+                float *k = KK + (size_t)t * kvd, *v = VV + (size_t)t * kvd;
+                const int pos = pos0 + t;
+                for (int h = 0; h < nkv; h++) { rmsnorm(k + h * hd, k + h * hd, L->k_norm, hd, c->eps); rms_plain(v + h * hd, hd, c->eps); }
+                for (int i = 0; i < half; i++) {
+                    const float ang = pos * fr[i], cs = cosf(ang), sn = sinf(ang);
+                    for (int h = 0; h < nkv; h++) { float *p = k + h * hd + i, a = p[0], b = p[half]; p[0] = a * cs - b * sn; p[half] = a * sn + b * cs; }
+                }
+                g4_kv_put(kb, vb, kh, vh, (size_t)(pos % cap) * kvd, k, v, kvd);
+            }
+        }
         for (int t = 0; t < B; t++) {
-            float *q = Q + (size_t)t * qd, *k = KK + (size_t)t * kvd, *v = VV + (size_t)t * kvd;
+            float *q = Q + (size_t)t * qd;
             const int pos = pos0 + t;
             for (int h = 0; h < nh; h++) rmsnorm(q + h * hd, q + h * hd, L->q_norm, hd, c->eps);
-            for (int h = 0; h < nkv; h++) { rmsnorm(k + h * hd, k + h * hd, L->k_norm, hd, c->eps); rms_plain(v + h * hd, hd, c->eps); }
             for (int i = 0; i < half; i++) {
                 const float ang = pos * fr[i], cs = cosf(ang), sn = sinf(ang);
                 for (int h = 0; h < nh; h++) { float *p = q + h * hd + i, a = p[0], b = p[half]; p[0] = a * cs - b * sn; p[half] = a * sn + b * cs; }
-                for (int h = 0; h < nkv; h++) { float *p = k + h * hd + i, a = p[0], b = p[half]; p[0] = a * cs - b * sn; p[half] = a * sn + b * cs; }
             }
-            g4_kv_put(kb, vb, kh, vh, (size_t)(pos % cap) * kvd, k, v, kvd);
         }
         {
             G4AttN aj = { Q, O, kb, vb, kh, vh, pos0, nh, hd, kvd, nh / nkv, L->swa && c->swa_win < cap ? c->swa_win : cap, cap };
@@ -1673,7 +1684,19 @@ static void g4_layers_n(Model *m, int pos0, int B, float *X) {
         for (int t = 0; t < B; t++) {
             float *x = X + (size_t)t * d, *ya = YA + (size_t)t * d;
             rmsnorm(ya, ya, L->post_ffn_norm, d, c->eps);
-            for (int i = 0; i < d; i++) x[i] = (x[i] + ya[i]) * L->out_scale;
+            for (int i = 0; i < d; i++) x[i] += ya[i];
+            if (c->ple_dim) {   /* PLE: terceiro residuo, com a entrada preparada por g4_ple_prep para esta camada/token */
+                const int E = c->ple_dim;
+                float *pt = PT + (size_t)t * E, *pt2 = PT2 + (size_t)t * d;
+                matvec(pt, &L->per_layer_inp_gate, x, E, d);
+                for (int i = 0; i < E; i++) pt[i] = gelu_t(pt[i]);
+                const float *inp_l = m->g4_ple + ((size_t)t * c->n_layers + l) * E;
+                for (int i = 0; i < E; i++) pt[i] *= inp_l[i];
+                matvec(pt2, &L->per_layer_proj, pt, d, E);
+                rmsnorm(pt2, pt2, L->per_layer_post_norm, d, c->eps);
+                for (int i = 0; i < d; i++) x[i] += pt2[i];
+            }
+            for (int i = 0; i < d; i++) x[i] *= L->out_scale;
             if (layer_tap) layer_tap(l, pos0 + t, x);
         }
     }
