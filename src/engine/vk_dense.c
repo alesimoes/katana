@@ -1366,13 +1366,19 @@ static inline float moe_dot(const Mat *W, size_t r, int cols) {
    KATANA_MOE_PF    prefetch por software das proximas linhas de pesos
    KATANA_MOE_ROWS  4 linhas por passo (VNNI) compartilhando a carga da ativacao
    KATANA_MOE_ACT   SiLU vetorizado (exp polinomial)
-   KATANA_MOE_ALIGN fatias do pool multiplas de 16 linhas (sem falso compartilhamento nas saidas) */
-static int moe_opt_pf = -1, moe_opt_rows = -1, moe_opt_act = -1, moe_opt_align = -1;
+   KATANA_MOE_ALIGN fatias do pool multiplas de 16 linhas (sem falso compartilhamento nas saidas)
+   KATANA_MOE_ROWS8 desligada por padrao (=1 liga): 8 linhas por passo com ativacao de 8 bits
+   por bloco de 256 (dot_q4k_r8/dot_q6k_r8, roadmap 3.3) em vez das 4 linhas de 16 bits exatas
+   acima; erro medido ~2.5-3.2e-4 por produto (vs ~1e-5 do caminho de 16 bits), por isso comeca
+   desligada ate o dono decidir o default pela qualidade medida em selftest --deep */
+static int moe_opt_pf = -1, moe_opt_rows = -1, moe_opt_act = -1, moe_opt_align = -1, moe_opt_rows8 = -1;
 static int moe_env_on(const char *n) { const char *v = getenv(n); return !(v && atoi(v) == 0); }
+static int moe_env_off(const char *n) { const char *v = getenv(n); return v && atoi(v) != 0; }
 static void moe_opt_init(void) {
     if (moe_opt_pf >= 0) return;
     moe_opt_pf = moe_env_on("KATANA_MOE_PF"); moe_opt_rows = moe_env_on("KATANA_MOE_ROWS");
     moe_opt_act = moe_env_on("KATANA_MOE_ACT"); moe_opt_align = moe_env_on("KATANA_MOE_ALIGN");
+    moe_opt_rows8 = moe_env_off("KATANA_MOE_ROWS8");
 }
 /* prefetch das linhas r0..r0+n-1 de W (contiguas na memoria), uma linha de cache por vez */
 static inline void moe_prefetch(const Mat *W, size_t r0, int n, size_t rows_total) {
@@ -1385,6 +1391,15 @@ static inline void moe_prefetch(const Mat *W, size_t r0, int n, size_t rows_tota
 static void moe_rows(const Mat *W, size_t r0, int n, int cols, size_t rows_total, float *dst) {
     int i = 0;
 #if HAVE_VNNI
+    /* 8 linhas com ativacao de 8 bits (KATANA_MOE_ROWS8=1): atras de switch, desligada por padrao
+       porque troca precisao por velocidade (ver comentario de moe_opt_rows8 acima) */
+    if (moe_opt_rows8 && act8_opt && cpu_vnni && W->q && !W->f && !cpu_exact && (W->type == T_Q4_K || W->type == T_Q6_K)) {
+        for (; i + 8 <= n; i += 8) {
+            if (moe_opt_pf) moe_prefetch(W, r0 + i + 8, 8, rows_total);
+            if (W->type == T_Q4_K) dot_q4k_r8(W->q + (r0 + i) * W->stride, W->stride, cols, dst + i);
+            else dot_q6k_r8(W->q + (r0 + i) * W->stride, W->stride, cols, dst + i);
+        }
+    }
     if (moe_opt_rows && cpu_vnni && W->q && !W->f && !cpu_exact && (W->type == T_Q4_K || W->type == T_Q6_K)) {
         for (; i + 4 <= n; i += 4) {
             if (moe_opt_pf) moe_prefetch(W, r0 + i + 4, 4, rows_total);
