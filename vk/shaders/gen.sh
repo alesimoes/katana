@@ -20,19 +20,35 @@ $G -V --target-env vulkan1.2 --vn att1r_spv -o att1r.h att1r.comp || exit 1
 mm() { # tipo nome BM BN SM SN glu
   $G -V --target-env vulkan1.3 -DWT=$1 -DBM=$3 -DBN=$4 -DSM=$5 -DSN=$6 -DXF32=0 -DSCTAB=0 -DBR=1 -DGLU=$7 -DYH=$7 --vn mm_t$1_$2_g$7_spv -o mm_t$1_$2_g$7.h mm.comp > /dev/null || { echo FALHOU mm $*; exit 1; }
 }
+# mesmas variantes de mm()/mmx()/mmg(), mas COOP=0: produto 16x16x16 por registro bloqueado em vez de matriz
+# cooperativa (celular sem VK_KHR_cooperative_matrix, com shaderFloat16; tools/vkgemm_mobile/tiled_vec.comp,
+# ~4,1x medido no Xclipse 540 sobre o caminho ingenuo). Sufixo _tiled; mesmos WS/XS (residuo em registrador).
+mmt() { # tipo nome BM BN SM SN glu
+  $G -V --target-env vulkan1.3 -DWT=$1 -DBM=$3 -DBN=$4 -DSM=$5 -DSN=$6 -DXF32=0 -DSCTAB=0 -DBR=1 -DGLU=$7 -DYH=$7 -DCOOP=0 --vn mm_t$1_${2}_g${7}_tiled_spv -o mm_t$1_${2}_g${7}_tiled.h mm.comp > /dev/null || { echo FALHOU mmt $*; exit 1; }
+}
 # variantes precisas, so planas, para os produtos sensiveis ao arredondamento: _ws (pesos Q8_0/F32 em alta + resto fp16)
 # e _xs (ativacao fp32 em alta + resto, e tambem pesos em alta + resto)
 mmx() { # tipo nome BM BN SM SN sufixo XS
   $G -V --target-env vulkan1.3 -DWT=$1 -DBM=$3 -DBN=$4 -DSM=$5 -DSN=$6 -DXF32=$8 -DXS=$8 -DWS=1 -DSCTAB=0 -DBR=1 -DGLU=0 -DYH=0 --vn mm_t$1_$2_$7_spv -o mm_t$1_$2_$7.h mm.comp > /dev/null || { echo FALHOU mmx $*; exit 1; }
 }
+mmxt() { # idem mmx, COOP=0: tipo nome BM BN SM SN sufixo XS
+  $G -V --target-env vulkan1.3 -DWT=$1 -DBM=$3 -DBN=$4 -DSM=$5 -DSN=$6 -DXF32=$8 -DXS=$8 -DWS=1 -DSCTAB=0 -DBR=1 -DGLU=0 -DYH=0 -DCOOP=0 --vn mm_t$1_${2}_${7}_tiled_spv -o mm_t$1_${2}_${7}_tiled.h mm.comp > /dev/null || { echo FALHOU mmxt $*; exit 1; }
+}
 mmg() { # glu preciso (xs + ws), saida fp32: tipo nome BM BN SM SN
   $G -V --target-env vulkan1.3 -DWT=$1 -DBM=$3 -DBN=$4 -DSM=$5 -DSN=$6 -DXF32=1 -DXS=1 -DWS=1 -DSCTAB=0 -DBR=1 -DGLU=1 -DYH=0 --vn mm_t$1_$2_gx_spv -o mm_t$1_$2_gx.h mm.comp > /dev/null || { echo FALHOU mmg $*; exit 1; }
+}
+mmgt() { # idem mmg, COOP=0: tipo nome BM BN SM SN
+  $G -V --target-env vulkan1.3 -DWT=$1 -DBM=$3 -DBN=$4 -DSM=$5 -DSN=$6 -DXF32=1 -DXS=1 -DWS=1 -DSCTAB=0 -DBR=1 -DGLU=1 -DYH=0 -DCOOP=0 --vn mm_t$1_${2}_gx_tiled_spv -o mm_t$1_${2}_gx_tiled.h mm.comp > /dev/null || { echo FALHOU mmgt $*; exit 1; }
 }
 for t in 0 1 2 3 4 5; do
   mmx $t 64x64 64 64 4 2 xs 1 & mmx $t 64x32w4 64 32 4 1 xs 1 & mmx $t 64x16w4 64 16 4 1 xs 1 &
   mmx $t 64x64 64 64 4 2 ws 0 & mmx $t 64x32w4 64 32 4 1 ws 0 & mmx $t 64x16w4 64 16 4 1 ws 0 &
   mmg $t 64x64 64 64 2 2 & mmg $t 64x32 64 32 2 2 & mmg $t 64x16 64 16 2 1 &
   mm $t 64x64 64 64 4 2 0 & mm $t 64x64 64 64 2 2 1 & mm $t 64x32w4 64 32 4 1 0 & mm $t 64x32 64 32 2 2 1 & mm $t 64x16w4 64 16 4 1 0 & mm $t 64x16 64 16 2 1 1 &
+  mmt $t 64x64 64 64 4 2 0 & mmt $t 64x64 64 64 2 2 1 & mmt $t 64x32w4 64 32 4 1 0 & mmt $t 64x32 64 32 2 2 1 & mmt $t 64x16w4 64 16 4 1 0 & mmt $t 64x16 64 16 2 1 1 &
+  mmxt $t 64x64 64 64 4 2 xs 1 & mmxt $t 64x32w4 64 32 4 1 xs 1 & mmxt $t 64x16w4 64 16 4 1 xs 1 &
+  mmxt $t 64x64 64 64 4 2 ws 0 & mmxt $t 64x32w4 64 32 4 1 ws 0 & mmxt $t 64x16w4 64 16 4 1 ws 0 &
+  mmgt $t 64x64 64 64 2 2 & mmgt $t 64x32 64 32 2 2 & mmgt $t 64x16 64 16 2 1 &
   wait
 done
 $G -V --target-env vulkan1.3 --vn cvt_spv -o cvt.h cvt.comp || exit 1

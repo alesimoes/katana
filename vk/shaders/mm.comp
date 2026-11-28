@@ -1,7 +1,17 @@
 #version 450
+// COOP=1 (padrao): produto no passo final por matriz cooperativa (coopMatLoad/coopMatMulAdd/coopMatStore).
+// COOP=0: sem matriz cooperativa (celular sem VK_KHR_cooperative_matrix) - mesmo ladrilho decodificado por
+// fill(), mas o produto 16x16x16 e feito por registro bloqueado escalar (tools/vkgemm_mobile/tiled_vec.comp,
+// medido ~4,1x sobre o caminho ingenuo no Xclipse 540); so vale com BR=1, WS=0, XS=0 (gen.sh so gera essa
+// combinacao para as variantes _tiled).
+#ifndef COOP
+#define COOP 1
+#endif
+#if COOP
 #extension GL_KHR_cooperative_matrix : require
 #extension GL_KHR_memory_scope_semantics : require
 #extension GL_KHR_shader_subgroup_basic : require
+#endif
 #extension GL_EXT_shader_explicit_arithmetic_types_float16 : require
 #extension GL_EXT_shader_16bit_storage : require
 #extension GL_EXT_control_flow_attributes : require
@@ -50,6 +60,13 @@ layout(local_size_x = NT) in;
 #endif
 #ifndef BR
 #define BR 0
+#endif
+#if !COOP && !BR
+#error "COOP=0 so suporta BR=1 (sem matriz cooperativa: tools/vkgemm_mobile/tiled_vec.comp)"
+#endif
+#if !COOP
+#define TR 4      // saidas por lane no ladrilho 16x16 (registro bloqueado): GR*TR = GC*TC = T, GR*GC = 32
+#define TC 2
 #endif
 const uint BK = 64 * KS, T = 16;
 const uint WM = BM / SM, WN = BN / SN;
@@ -281,7 +298,18 @@ void fill(uint kk, uint ao, uint bo) {
 }
 
 void main() {
-    const uint id = gl_LocalInvocationID.x, warp = gl_SubgroupID, lane = gl_SubgroupInvocationID;
+    const uint id = gl_LocalInvocationID.x;
+#if COOP
+    const uint warp = gl_SubgroupID, lane = gl_SubgroupInvocationID;
+#else
+    // sem matriz cooperativa (Xclipse 540): ladrilho logico de 32 "lanes", independente do tamanho real
+    // do subgrupo do driver (64 nesse aparelho) - cada lane cobre TR x TC saidas do bloco 16x16 em
+    // registradores (mesma tecnica de tools/vkgemm_mobile/tiled_vec.comp, sobre o ladrilho ja decodificado
+    // por fill()). barrier() substitui subgroupBarrier() abaixo: sincroniza o workgroup todo, nao so o
+    // subgrupo real, mas e sempre correto (so um pouco mais conservador).
+    const uint warp = id / 32, lane = id % 32;
+    const uint GC = T / TC, trg = lane / GC, tcg = lane % GC;
+#endif
     const uint wr = warp % SM, wc = warp / SM;
 #if GLU
     const uint ir = gl_WorkGroupID.x * (BM / 2);
@@ -289,11 +317,20 @@ void main() {
     const uint ir = gl_WorkGroupID.x * BM;
 #endif
     const uint ic = gl_WorkGroupID.y * BN;
+#if COOP
     coopmat<float, gl_ScopeSubgroup, T, T, gl_MatrixUseAccumulator> acc[CR * CC];
     for (uint i = 0; i < CR * CC; i++) acc[i] = coopmat<float, gl_ScopeSubgroup, T, T, gl_MatrixUseAccumulator>(0.0);
 #if XS || WS
     coopmat<float, gl_ScopeSubgroup, T, T, gl_MatrixUseAccumulator> acl[CR * CC];     // produtos com os restos (vezes LS)
     for (uint i = 0; i < CR * CC; i++) acl[i] = coopmat<float, gl_ScopeSubgroup, T, T, gl_MatrixUseAccumulator>(0.0);
+#endif
+#else
+    float accs[CR * CC][TR][TC];
+    for (uint i = 0; i < CR * CC; i++) for (uint a = 0; a < TR; a++) for (uint b = 0; b < TC; b++) accs[i][a][b] = 0.0;
+#if XS || WS
+    float accl[CR * CC][TR][TC];      // produtos com os restos (vezes LS), igual ao acl[] do caminho coopMat
+    for (uint i = 0; i < CR * CC; i++) for (uint a = 0; a < TR; a++) for (uint b = 0; b < TC; b++) accl[i][a][b] = 0.0;
+#endif
 #endif
     const uint kb = gl_WorkGroupID.z * pc.kper, ke = min(pc.cols, kb + pc.kper);
     const uint tokens = pc.tokens;
@@ -343,6 +380,7 @@ void main() {
 #if !DB
         barrier();
 #endif
+#if COOP
         for (uint k = 0; k < BK; k += T) {
             for (uint cr = 0; cr < CR; cr++) {
                 coopmat<float16_t, gl_ScopeSubgroup, T, T, gl_MatrixUseA> a;
@@ -369,19 +407,66 @@ void main() {
                 }
             }
         }
+#else
+        // mesmo ladrilho 16x16x16 que o coopMat faria, mas por registro bloqueado (TR x TC por lane):
+        // cada lane cobre linhas locais {trg*TR..trg*TR+TR-1} x colunas locais {tcg*TC..tcg*TC+TC-1}
+        // do bloco T x T, somando sobre kk - exatamente a soma que coopMatMulAdd faria nesse bloco.
+        for (uint k = 0; k < BK; k += T) {
+            for (uint cr = 0; cr < CR; cr++) {
+                const uint arow0 = ao + (wr * WM + cr * T + trg * TR) * STRIDE + k;
+                for (uint cc = 0; cc < CC; cc++) {
+                    const uint bcol0 = bo + k * STRB + wc * WN + cc * T + tcg * TC;
+                    [[dont_unroll]] for (uint kk = 0; kk < T; kk++) {
+                        float ra[TR], rb[TC];
+                        for (uint a = 0; a < TR; a++) ra[a] = float(buf_a[arow0 + a * STRIDE + kk]);
+                        for (uint b = 0; b < TC; b++) rb[b] = float(buf_b[bcol0 + b + kk * STRB]);
+                        for (uint a = 0; a < TR; a++) for (uint b = 0; b < TC; b++) accs[cc * CR + cr][a][b] += ra[a] * rb[b];
+#if WS
+                        {       // peso em duas partes (alta ja somada acima, resto aqui): mesmo par de ativacao rb
+                            float raw[TR];
+                            for (uint a = 0; a < TR; a++) raw[a] = float(buf_w[arow0 + a * STRIDE + kk]);
+                            for (uint a = 0; a < TR; a++) for (uint b = 0; b < TC; b++) accl[cc * CR + cr][a][b] += raw[a] * rb[b];
+                        }
+#endif
+#if XS
+                        {       // ativacao em duas partes (alta ja somada acima, resto aqui): mesmo peso ra (parte alta)
+                            float rbr[TC];
+                            for (uint b = 0; b < TC; b++) rbr[b] = float(buf_r[bcol0 + b + kk * STRB]);
+                            for (uint a = 0; a < TR; a++) for (uint b = 0; b < TC; b++) accl[cc * CR + cr][a][b] += ra[a] * rbr[b];
+                        }
+#endif
+                    }
+                }
+            }
+        }
+#endif
         barrier();
     }
     // ---- epilogue
 #if XS || WS
+#if COOP
     for (uint i = 0; i < CR * CC; i++) acc[i] = acc[i] + acl[i] * (1.0 / LS);
+#else
+    for (uint i = 0; i < CR * CC; i++) for (uint a = 0; a < TR; a++) for (uint b = 0; b < TC; b++)
+        accs[i][a][b] = accs[i][a][b] + accl[i][a][b] * (1.0 / LS);
+#endif
 #endif
     const uint yz = gl_WorkGroupID.z * pc.slice;
 #if !GLU
     if (pc.add == 0u && vec4ok && ir + BM <= pc.rows && ic + BN <= tokens) {
+#if COOP
         [[unroll]] for (uint cr = 0; cr < CR; cr++)
             [[unroll]] for (uint cc = 0; cc < CC; cc++)
                 coopMatStore(acc[cc * CR + cr], yb.y, yz + (ir + wr * WM + cr * T) * tokens + ic + wc * WN + cc * T, tokens,
                              gl_CooperativeMatrixLayoutRowMajor);
+#else
+        [[unroll]] for (uint cr = 0; cr < CR; cr++)
+            [[unroll]] for (uint cc = 0; cc < CC; cc++)
+                [[unroll]] for (uint a = 0; a < TR; a++)
+                    [[unroll]] for (uint b = 0; b < TC; b++)
+                        yb.y[yz + (ir + wr * WM + cr * T + trg * TR + a) * tokens + ic + wc * WN + cc * T + tcg * TC + b]
+                            = accs[cc * CR + cr][a][b];
+#endif
         return;
     }
 #endif
@@ -392,9 +477,18 @@ void main() {
 #if GLU
     [[unroll]] for (uint cr = 0; cr < CR / 2; cr++)
         [[unroll]] for (uint cc = 0; cc < CC; cc++) {
+#if COOP
             coopMatStore(acc[cc * CR + cr], scr, sb, T, gl_CooperativeMatrixLayoutRowMajor);
             coopMatStore(acc[cc * CR + cr + CR / 2], scr, sb + 256, T, gl_CooperativeMatrixLayoutRowMajor);
             subgroupMemoryBarrierShared(); subgroupBarrier();
+#else
+            [[unroll]] for (uint a = 0; a < TR; a++)
+                [[unroll]] for (uint b = 0; b < TC; b++) {
+                    scr[sb + (trg * TR + a) * T + tcg * TC + b] = accs[cc * CR + cr][a][b];
+                    scr[sb + 256 + (trg * TR + a) * T + tcg * TC + b] = accs[cc * CR + cr + CR / 2][a][b];
+                }
+            barrier();
+#endif
             for (uint e = lane; e < 256; e += 32) {
                 const uint row = ir + wr * (WM / 2) + cr * T + e / 16, tok = ic + wc * WN + cc * T + e % 16;
                 if (row < pc.rows && tok < tokens) {
@@ -412,13 +506,24 @@ void main() {
 #endif
                 }
             }
+#if COOP
             subgroupMemoryBarrierShared(); subgroupBarrier();
+#else
+            barrier();
+#endif
         }
 #else
     [[unroll]] for (uint cr = 0; cr < CR; cr++)
         [[unroll]] for (uint cc = 0; cc < CC; cc++) {
+#if COOP
             coopMatStore(acc[cc * CR + cr], scr, sb, T, gl_CooperativeMatrixLayoutRowMajor);
             subgroupMemoryBarrierShared(); subgroupBarrier();
+#else
+            [[unroll]] for (uint a = 0; a < TR; a++)
+                [[unroll]] for (uint b = 0; b < TC; b++)
+                    scr[sb + (trg * TR + a) * T + tcg * TC + b] = accs[cc * CR + cr][a][b];
+            barrier();
+#endif
             for (uint e = lane; e < 256; e += 32) {
                 const uint row = ir + wr * WM + cr * T + e / 16, tok = ic + wc * WN + cc * T + e % 16;
                 if (row < pc.rows && tok < tokens) {
@@ -428,7 +533,11 @@ void main() {
                     yb.y[ix] = v;
                 }
             }
+#if COOP
             subgroupMemoryBarrierShared(); subgroupBarrier();
+#else
+            barrier();
+#endif
         }
 #endif
 }
