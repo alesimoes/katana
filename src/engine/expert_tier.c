@@ -14,6 +14,8 @@
  *   KATANA_EXPERT_IO=<n>        threads de leitura (padrao 16)
  *   KATANA_EXPERT_DIRECT=0      leitura com cache do sistema em vez de O_DIRECT
  *   KATANA_EXPERT_PFD=<d>       distancia da previsao em camadas (padrao 1; 2 e 3 usam o roteador antecipado)
+ *   KATANA_EXPERT_CLASS=0       desliga classes de frequencia no despejo (padrao ligado; ver abaixo)
+ *   KATANA_EXPERT_GROUP=0       desliga o agrupamento de leituras vizinhas (padrao ligado; so com pacote .exb)
  *
  * Pacote de especialistas (katana bundle <modelo.gguf>): no GGUF as tres matrizes de um especialista (gate, up, down)
  * ficam em tres regioes afastadas do arquivo, entao trazer um especialista sao tres leituras. O comando grava
@@ -38,6 +40,27 @@
  * cheia primeiro) e so cai pra fria depois de ficar repetidamente abaixo da media. O tipo da matriz (Mat.type e
  * .stride) muda por chamada conforme a vaga que serviu o pedido: o motor ja escolhe o kernel pelo tipo de cada
  * Mat, entao misturar hi e fria no mesmo lote de tokens funciona sem mudar os kernels de produto.
+ *
+ * Classes de frequencia no despejo (KATANA_EXPERT_CLASS=0 desliga, padrao ligado): et.ghot (acima) ja guarda o
+ * calor por especialista independente da vaga; agora o despejo (et_victim, politica "heat") tambem usa esse
+ * calor acumulado em vez de reiniciar em zero a cada vez que uma vaga troca de especialista. et_fill inicializa
+ * p->heat com et.ghot[chave] (e nao mais 0), entao um especialista que ja foi quente, foi despejado e volta,
+ * chega na vaga ja com seu historico, sem precisar "reaquecer" do zero. A comparacao de et_victim tambem muda:
+ * em vez de comparar o heat continuo diretamente, cada vaga cai numa classe (et_class, o expoente binario do
+ * heat, equivalente a log2 discretizado) e o despejo escolhe primeiro a classe mais fria; dentro da classe,
+ * a vaga mais velha (stamp) sai primeiro. Isso e exatamente o resultado de manter uma fila por classe (a mais
+ * velha da classe mais fria nao-vazia sai primeiro) so que calculado por uma varredura (como o despejo ja fazia),
+ * sem estruturas extras - nslots e pequeno (poucas centenas a poucos milhares), entao o custo e o mesmo de antes.
+ * Nunca muda qual especialista o roteador escolhe, so a ordem/velocidade de quem fica residente.
+ *
+ * Leituras agrupadas (KATANA_EXPERT_GROUP=0 desliga, padrao ligado; so com pacote .exb): quando uma chamada erra
+ * varios especialistas de uma vez (troca de camada), em vez de um pread por especialista, os que vao ler regioes
+ * vizinhas do arquivo (offset proximo, a distancia de ate um registro) sao ordenados por posicao e agrupados numa
+ * leitura so, do inicio do primeiro ao fim do ultimo do grupo, com ate ET_GMAX especialistas por grupo; os bytes
+ * de quem nao pediu nada (o buraco entre dois vizinhos nao contiguos) sao lidos e descartados, barato comparado a
+ * uma leitura a mais. Uma thread so faz o pread grande e os memcpy's para cada vaga (et_worker, fila et.gq,
+ * mesma prioridade da demanda avulsa). Nao muda a escolha de hi/fria (et_bx_pick decide por especialista, igual
+ * antes) nem os bytes que chegam em cada vaga, so quantas leituras o kernel ve.
  * Medidas (katana tiersim ...) e o teste de leitura aleatoria do disco (katana iobench) ficam no fim do arquivo. */
 #ifdef __linux__
 #include <errno.h>
@@ -64,6 +87,10 @@ typedef struct {
     size_t doff[3];             /* onde os dados de cada matriz comecam na vaga */
 } EtSlot;
 typedef struct { int slot; size_t dst, off, len; } EtJob;      /* le [off, off+len) do arquivo para vaga + dst */
+#define ET_GMAX 8                    /* especialistas vizinhos por leitura agrupada (so pacote .exb) */
+/* leitura agrupada: um pread cobrindo [off, off+len) do pacote atende ate ET_GMAX vagas de uma vez; cada vaga i
+   recebe os bytes em buf+suboff[i], sublen[i] bytes (dst dentro da vaga e sempre 0: registro inteiro, como et_fill) */
+typedef struct { int n, slot[ET_GMAX]; size_t suboff[ET_GMAX], sublen[ET_GMAX], off, len; } EtGJob;
 /* pacote de especialistas (<modelo>.exb): cabecalho, indice (um EtBx por camada x especialista) e os registros.
    v02: cada registro pode ter, alem do hi (quantizacao original), uma copia fria (cold_type, 0 = pacote sem
    copia fria) numa posicao separada do arquivo, tambem alinhada a pagina. */
@@ -84,6 +111,9 @@ static struct {
     double decay, grow; uint64_t tick, serial, clock;
     pthread_mutex_t mu; pthread_cond_t cv_job, cv_done;
     EtJob *q; int qh, qt, qcap; EtJob *pq; int pqh, pqt;     /* fila da demanda (q) e da previsao (pq) */
+    EtGJob *gq; int gqh, gqt;                                /* fila das leituras agrupadas (mesma capacidade de q) */
+    int group; uint64_t greads, gmembers;                    /* KATANA_EXPERT_GROUP e suas contagens */
+    int hclass;                                              /* KATANA_EXPERT_CLASS: despejo por classe de frequencia */
     int stop;
     /* previsao: coocorrencia aprendida e ultima escolha por camada */
     float *co; float *conn; int *prev;
@@ -113,19 +143,42 @@ static void *et_worker(void *arg) {
     (void)arg;
     pthread_mutex_lock(&et.mu);
     for (;;) {
-        EtJob j;
-        while (!et.stop && et.qh == et.qt && et.pqh == et.pqt) pthread_cond_wait(&et.cv_job, &et.mu);
+        while (!et.stop && et.qh == et.qt && et.gqh == et.gqt && et.pqh == et.pqt) pthread_cond_wait(&et.cv_job, &et.mu);
         if (et.stop) break;
-        if (et.qh != et.qt) j = et.q[et.qh++ % et.qcap];
-        else j = et.pq[et.pqh++ % et.qcap];
-        pthread_mutex_unlock(&et.mu);
-        const double t0 = now_sec();
-        uint8_t *dst = et.arena + (size_t)j.slot * et.slot_bytes + j.dst;
-        if (et_pread_full(et.fd, dst, j.len, (off_t)j.off) != 0) { perror("expert_tier: pread"); exit(1); }
-        const double dt = now_sec() - t0;
-        pthread_mutex_lock(&et.mu);
-        et.t_read += dt; et.bytes += (double)j.len; et.reads++;
-        if (--et.sl[j.slot].pend == 0) { et.sl[j.slot].state = 2; pthread_cond_broadcast(&et.cv_done); }
+        if (et.qh != et.qt) {                       /* leitura avulta de demanda */
+            EtJob j = et.q[et.qh++ % et.qcap];
+            pthread_mutex_unlock(&et.mu);
+            const double t0 = now_sec();
+            uint8_t *dst = et.arena + (size_t)j.slot * et.slot_bytes + j.dst;
+            if (et_pread_full(et.fd, dst, j.len, (off_t)j.off) != 0) { perror("expert_tier: pread"); exit(1); }
+            const double dt = now_sec() - t0;
+            pthread_mutex_lock(&et.mu);
+            et.t_read += dt; et.bytes += (double)j.len; et.reads++;
+            if (--et.sl[j.slot].pend == 0) { et.sl[j.slot].state = 2; pthread_cond_broadcast(&et.cv_done); }
+        } else if (et.gqh != et.gqt) {               /* leitura agrupada: varios especialistas vizinhos, um pread so */
+            EtGJob g = et.gq[et.gqh++ % et.qcap];
+            pthread_mutex_unlock(&et.mu);
+            const double t0 = now_sec();
+            uint8_t *buf = aligned_alloc(4096, g.len);
+            if (!buf || et_pread_full(et.fd, buf, g.len, (off_t)g.off) != 0) { perror("expert_tier: pread agrupado"); exit(1); }
+            for (int i = 0; i < g.n; i++) memcpy(et.arena + (size_t)g.slot[i] * et.slot_bytes, buf + g.suboff[i], g.sublen[i]);
+            free(buf);
+            const double dt = now_sec() - t0;
+            pthread_mutex_lock(&et.mu);
+            et.t_read += dt; et.bytes += (double)g.len; et.reads++; et.greads++; et.gmembers += (uint64_t)g.n;
+            for (int i = 0; i < g.n; i++) if (--et.sl[g.slot[i]].pend == 0) et.sl[g.slot[i]].state = 2;
+            pthread_cond_broadcast(&et.cv_done);
+        } else {                                     /* previsao */
+            EtJob j = et.pq[et.pqh++ % et.qcap];
+            pthread_mutex_unlock(&et.mu);
+            const double t0 = now_sec();
+            uint8_t *dst = et.arena + (size_t)j.slot * et.slot_bytes + j.dst;
+            if (et_pread_full(et.fd, dst, j.len, (off_t)j.off) != 0) { perror("expert_tier: pread"); exit(1); }
+            const double dt = now_sec() - t0;
+            pthread_mutex_lock(&et.mu);
+            et.t_read += dt; et.bytes += (double)j.len; et.reads++;
+            if (--et.sl[j.slot].pend == 0) { et.sl[j.slot].state = 2; pthread_cond_broadcast(&et.cv_done); }
+        }
     }
     pthread_mutex_unlock(&et.mu);
     return NULL;
@@ -214,8 +267,21 @@ bad:
     return NULL;
 }
 
+/* classe de frequencia de um valor de calor decaido (et.ghot ou EtSlot.heat): o expoente binario, equivalente a
+   log2 discretizado (v = mantissa * 2^classe, 0.5 <= mantissa < 1). Nunca usado (v <= 0) cai na classe mais fria
+   possivel, sai primeiro. So usada quando KATANA_EXPERT_CLASS esta ligado (et.hclass). */
+static int et_class(double v) {
+    if (v <= 0) return -1000000000;
+    int c; frexp(v, &c);
+    return c;
+}
 /* escolhe a vaga a despejar: menor valor entre as prontas, sem uso na chamada e sem previsao pendente de uso
-   (previsao so despeja as outras). Chamada com o mutex tomado. Devolve -1 se nao houver. */
+   (previsao so despeja as outras). Com et.hclass, o despejo compara a classe de frequencia (et_class do heat, que
+   agora sobrevive a troca de especialista na vaga - ver et_slot_take) antes do heat continuo: a vaga na classe
+   mais fria sai, e dentro da mesma classe a mais velha (stamp) - o mesmo resultado de uma fila por classe (a mais
+   velha da classe mais fria nao-vazia sai primeiro), so que por varredura em vez de filas separadas. Sem
+   et.hclass, compara o heat continuo como antes (so para KATANA_EXPERT_CLASS=0). Chamada com o mutex tomado.
+   Devolve -1 se nao houver vaga. */
 static int et_victim(void) {
     int best = -1;
     for (int s = 0; s < et.nslots; s++) {
@@ -224,33 +290,56 @@ static int et_victim(void) {
         if (p->state != 2 || p->pin == et.serial || (p->pf && p->ptick == et.tick)) continue;
         if (best < 0) { best = s; continue; }
         const EtSlot *b = &et.sl[best];
-        if (et.policy == 0 ? (p->heat < b->heat || (p->heat == b->heat && p->stamp < b->stamp)) : p->stamp < b->stamp) best = s;
+        if (et.policy != 0) { if (p->stamp < b->stamp) best = s; continue; }
+        if (et.hclass) {
+            const int pc = et_class(p->heat), bc = et_class(b->heat);
+            if (pc < bc || (pc == bc && p->stamp < b->stamp)) best = s;
+        } else if (p->heat < b->heat || (p->heat == b->heat && p->stamp < b->stamp)) best = s;
     }
     return best;
 }
-/* poe as leituras de um especialista numa vaga (mutex tomado) */
-static void et_fill(Model *m, int s, int l, int e, int demand) {
+/* registra que a vaga s passa a guardar (l, e); limpa o mapeamento da chave antiga (se havia) e inicializa o
+   calor com o acumulado global (et.ghot), que sobrevive ao despejo - sem isso, um especialista que ja foi quente
+   e foi despejado voltaria sempre "frio" (heat 0) e poderia ser despejado de novo antes de voltar a acumular uso.
+   Sem et.ghot (KATANA_EXPERT_CLASS=0 e sem quantizacao mista), comeca em 0 como antes. Chamada com o mutex tomado;
+   nao mexe em p->cold nem p->doff (quem chama decide a copia hi/fria e os deslocamentos). */
+static void et_slot_take(int s, int l, int e, int demand) {
     EtSlot *p = &et.sl[s];
-    size_t off[3], len[3], pos = 0;
     if (p->key >= 0) {
         if (p->pf) et.pf_wasted++;
         et.where[p->key] = -1;
     }
-    p->key = l * et.E + e; et.where[p->key] = s; p->state = 1; p->pf = !demand; p->ptick = et.tick; p->heat = 0; p->cold = 0;
+    p->key = l * et.E + e; et.where[p->key] = s; p->state = 1; p->pf = !demand; p->ptick = et.tick;
+    p->heat = et.ghot ? et.ghot[p->key] : 0; p->cold = 0;
+}
+/* decide, para a chave de um especialista do pacote, se le a copia fria ou a hi, e onde cada uma esta no arquivo;
+   et_force_cold/et_force_hot forcam a escolha nos testes (katana bundle check ... cold). Mesma conta usada pelo
+   pedido avulso (et_fill) e pelo agrupador de vizinhos (et_fill_grouped), para nunca divergir entre os dois. */
+static void et_bx_pick(int key, int *cold_out, size_t *pos_out, size_t *len_out, const uint32_t **rel_out) {
+    const EtBx *b = &et.bx[key];
+    const int cold = b->cpos && (et_force_cold || (!et_force_hot && et.ghot[key] * (double)(et.L * et.E) < et.gsum));
+    *cold_out = cold;
+    *pos_out = (size_t)(cold ? b->cpos : b->pos);
+    *len_out = cold ? b->crec : b->rec;
+    if (rel_out) *rel_out = cold ? b->crel : b->rel;
+}
+/* poe as leituras de um especialista numa vaga, como um pedido avulso (mutex tomado) */
+static void et_fill(Model *m, int s, int l, int e, int demand) {
+    et_slot_take(s, l, e, demand);
+    EtSlot *p = &et.sl[s];
     if (et.bx) {                                /* pacote: o registro inteiro (hi ou frio) numa leitura so */
-        const EtBx *b = &et.bx[p->key];
-        /* calor deste especialista contra a media global: abaixo da media (e com copia fria) le a fria, que e
-           menos bytes; et_force_cold/et_force_hot forcam a escolha nos testes (katana bundle check ... cold) */
-        const int cold = b->cpos && (et_force_cold || (!et_force_hot && et.ghot[p->key] * (double)(et.L * et.E) < et.gsum));
+        int cold; size_t pos, len; const uint32_t *rel;
+        et_bx_pick(p->key, &cold, &pos, &len, &rel);
         p->cold = cold;
-        if (cold) { et.fetch_cold++; for (int r = 0; r < 3; r++) p->doff[r] = b->crel[r]; }
-        else { et.fetch_hot++; for (int r = 0; r < 3; r++) p->doff[r] = b->rel[r]; }
-        EtJob j = { s, 0, (size_t)(cold ? b->cpos : b->pos), cold ? b->crec : b->rec };
+        for (int r = 0; r < 3; r++) p->doff[r] = rel[r];
+        if (cold) et.fetch_cold++; else et.fetch_hot++;
+        EtJob j = { s, 0, pos, len };
         p->pend = 1;
         if (demand) et.q[et.qt++ % et.qcap] = j; else et.pq[et.pqt++ % et.qcap] = j;
         pthread_cond_broadcast(&et.cv_job);
         return;
     }
+    size_t off[3], len[3], pos = 0;
     et_regions(m, l, e, off, len);
     p->pend = 3;
     for (int r = 0; r < 3; r++) {
@@ -261,6 +350,64 @@ static void et_fill(Model *m, int s, int l, int e, int demand) {
         if (demand) et.q[et.qt++ % et.qcap] = j; else et.pq[et.pqt++ % et.qcap] = j;
     }
     pthread_cond_broadcast(&et.cv_job);
+}
+/* mesma preparacao de et_fill para o caminho do pacote, mas sem enfileirar a leitura - quem chama (sempre
+   et_fill_grouped) ja sabe a posicao/tamanho no arquivo (calculados com et_bx_pick) e vai juntar varias vagas
+   vizinhas num EtGJob so. Mutex tomado. */
+static void et_group_meta(int s, int l, int e, int demand, int cold, const uint32_t rel[3]) {
+    et_slot_take(s, l, e, demand);
+    EtSlot *p = &et.sl[s];
+    p->cold = cold;
+    for (int r = 0; r < 3; r++) p->doff[r] = rel[r];
+    if (cold) et.fetch_cold++; else et.fetch_hot++;
+    p->pend = 1;
+}
+/* agrupa misses vizinhos (offset proximo no pacote, a distancia de ate um registro) numa leitura so por grupo de
+   ate ET_GMAX especialistas: ordena os pedidos por posicao no arquivo, junta os vizinhos num EtGJob e despacha os
+   isolados como et_fill normal. So para o caminho do pacote (et.bx); mutex tomado, mesmo contrato de et_victim
+   usado pelo chamador original (pin logo depois de escolher a vaga, para nao despejar o que este lote acabou de
+   tomar). Devolve 0 se uma vaga faltou no meio (mesmo efeito do loop avulso: o resto do lote e abandonado e o
+   chamador cai no caminho mapeado) - os membros ja enfileirados ate ali continuam normalmente, so nao sao usados
+   por esta chamada. */
+static int et_fill_grouped(Model *m, int l, const int *uniq, const int *need, int nneed, int *slot) {
+    typedef struct { int u, cold; size_t pos, len; const uint32_t *rel; } Cand;
+    Cand c[64];
+    const int n = nneed > 64 ? 64 : nneed;
+    for (int i = 0; i < n; i++) {
+        const int u = need[i]; int cold; size_t pos, len; const uint32_t *rel;
+        et_bx_pick(l * et.E + uniq[u], &cold, &pos, &len, &rel);
+        c[i] = (Cand){ u, cold, pos, len, rel };
+    }
+    for (int i = 1; i < n; i++) {                /* ordena por posicao no arquivo: insercao, n pequeno (<= K) */
+        Cand t = c[i]; int j = i - 1;
+        while (j >= 0 && c[j].pos > t.pos) { c[j + 1] = c[j]; j--; }
+        c[j + 1] = t;
+    }
+    const size_t gap_max = et.slot_bytes;        /* ponte de ate um registro nao pedido entre dois vizinhos */
+    int i = 0, ok = 1;
+    while (i < n && ok) {
+        int j = i + 1;
+        while (j < n && j - i < ET_GMAX && c[j].pos <= c[j - 1].pos + c[j - 1].len + gap_max) j++;
+        EtGJob g; memset(&g, 0, sizeof g);
+        g.off = c[i].pos;
+        for (int k = i; k < j; k++) {
+            const int s = et_victim();
+            if (s < 0) { ok = 0; break; }
+            et_group_meta(s, l, uniq[c[k].u], 1, c[k].cold, c[k].rel);
+            g.slot[g.n] = s; g.suboff[g.n] = c[k].pos - g.off; g.sublen[g.n] = c[k].len; g.n++;
+            g.len = (c[k].pos + c[k].len) - g.off;
+            et.sl[s].pin = et.serial; slot[c[k].u] = s; et.miss++;
+        }
+        if (g.n == 1) {                          /* sobrou um so (grupo de 1 ou faltou vaga no meio): manda avulso */
+            et.q[et.qt++ % et.qcap] = (EtJob){ g.slot[0], 0, g.off, g.len };
+            pthread_cond_broadcast(&et.cv_job);
+        } else if (g.n > 1) {
+            et.gq[et.gqt++ % et.qcap] = g;
+            pthread_cond_broadcast(&et.cv_job);
+        }
+        i = j;
+    }
+    return ok;
 }
 
 /* os dados da matriz r (0 gate, 1 up, 2 down) do especialista que esta na vaga s */
@@ -304,7 +451,9 @@ static int et_wrap(Model *m, const Layer *L, const int *ex, const int *xi, int n
         } else need[nneed++] = u;
     }
     int ok = 1;
-    for (int i = 0; i < nneed && ok; i++) {                 /* 2) o que falta: despeja e le */
+    if (et.bx && et.group && nneed >= 2) {                  /* 2) o que falta: agrupa vizinhos quando vale a pena */
+        ok = et_fill_grouped(m, l, uniq, need, nneed, slot);
+    } else for (int i = 0; i < nneed && ok; i++) {          /* despeja e le um por um */
         const int u = need[i], s = et_victim();
         if (s < 0) { ok = 0; break; }
         et_fill(m, s, l, uniq[u], 1);
@@ -433,6 +582,8 @@ static void et_report(void) {
                 qtype_name(et.cold_type), (unsigned long long)et.fetch_hot, (unsigned long long)et.fetch_cold,
                 totf ? 100.0 * et.fetch_cold / totf : 0.0);
     }
+    if (et.greads) fprintf(stderr, "[expert_tier] leituras agrupadas: %llu preads atenderam %llu especialistas vizinhos (%.2f por pread)\n",
+            (unsigned long long)et.greads, (unsigned long long)et.gmembers, (double)et.gmembers / et.greads);
 }
 
 /* liga a arena depois do modelo carregado (chamado no fim de load_model); sem KATANA_EXPERT_RAM nao faz nada */
@@ -460,7 +611,10 @@ static void et_init(Model *m, const char *path, const uint8_t *base) {
     et.fd = -1;
     if (!et_no_bundle) et.bx = et_bx_open(m, path, et.L, et.E, &et.fd, et.direct, &et.cold_type);
     if (et.bx) { mx = 0; for (int i = 0; i < et.L * et.E; i++) if (et.bx[i].rec > mx) mx = et.bx[i].rec; }
-    if (et.bx && et.cold_type) et.ghot = xalloc((size_t)et.L * et.E, sizeof(double));   /* calor global por especialista: hi x fria */
+    et.hclass = (s = getenv("KATANA_EXPERT_CLASS")) ? atoi(s) != 0 : 1;
+    /* calor global por especialista: alimenta a escolha hi/fria da quantizacao mista E, com KATANA_EXPERT_CLASS,
+       o heat inicial de uma vaga que troca de especialista (et_slot_take) - uma unica tabela para as duas coisas */
+    if (et.hclass || (et.bx && et.cold_type)) et.ghot = xalloc((size_t)et.L * et.E, sizeof(double));
     et.slot_bytes = (mx + ET_PG - 1) & ~(size_t)(ET_PG - 1);
     size_t ns = (size_t)(gb * 1073741824.0 / (double)et.slot_bytes);
     if (ns > (size_t)et.L * et.E) ns = (size_t)et.L * et.E;
@@ -484,6 +638,8 @@ static void et_init(Model *m, const char *path, const uint8_t *base) {
     for (int i = 0; i < et.nslots; i++) et.sl[i].key = -1;
     et.qcap = 1 << 16;
     et.q = xalloc(et.qcap, sizeof(EtJob)); et.pq = xalloc(et.qcap, sizeof(EtJob));
+    et.group = (s = getenv("KATANA_EXPERT_GROUP")) ? atoi(s) != 0 : 1;
+    if (et.bx && et.group) et.gq = xalloc(et.qcap, sizeof(EtGJob));
     et.prev = xalloc((size_t)et.L * et.K, 4);
     if (et.pred == 1) { et.co = xalloc((size_t)et.L * et.E * et.E, 4); et.conn = xalloc((size_t)et.L * et.E, 4); }
     et.last_l = 1 << 30;
@@ -493,12 +649,14 @@ static void et_init(Model *m, const char *path, const uint8_t *base) {
     et_hook_route = et_route;
     et_on = 1;
     atexit(et_report);
-    fprintf(stderr, "[expert_tier] ligado: %d vagas de %.2f MB = %.2f GB; despejo %s, previsao %s (%d por camada, %d camada(s) a frente), %d threads, %s, %s\n",
+    fprintf(stderr, "[expert_tier] ligado: %d vagas de %.2f MB = %.2f GB; despejo %s%s, previsao %s (%d por camada, %d camada(s) a frente), %d threads, %s, %s\n",
             et.nslots, et.slot_bytes / 1048576.0, (double)et.nslots * et.slot_bytes / 1073741824.0, et.policy ? "lru" : "frequencia",
+            et.policy == 0 && et.hclass ? " por classe" : "",
             et.pred == 0 ? "roteador antecipado" : et.pred == 1 ? "coocorrencia" : et.pred == 2 ? "token anterior" : "nenhuma",
             et.pfn, et.pfd, et.nthr, et.direct ? "O_DIRECT" : "com cache",
             et.bx ? "pacote .exb (1 leitura por especialista)" : "GGUF (3 leituras por especialista)");
     if (et.cold_type) fprintf(stderr, "[expert_tier] quantizacao mista: especialistas abaixo da media de uso leem a copia fria (%s) do pacote\n", qtype_name(et.cold_type));
+    if (et.bx && et.group) fprintf(stderr, "[expert_tier] leituras agrupadas: misses vizinhos no pacote (ate %d, offset proximo) viram um pread so\n", ET_GMAX);
 }
 
 /* ====================== medidas: katana tiersim run|sim, katana iobench ======================

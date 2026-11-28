@@ -155,9 +155,9 @@ preload by the heat of the previous session.
 
 | Technique | What it does | Effort |
 |---|---|---|
-| Frequency classes in eviction | class = log2 of the decayed use; one queue per class; the one with the greatest age relative to its class leaves. The accumulated use survives eviction | small |
+| Frequency classes in eviction | class = log2 of the decayed use; one queue per class; the one with the greatest age relative to its class leaves. The accumulated use survives eviction | done |
 | Large batch does not evict | the prompt only takes free slots, so as not to push out the generation's experts | done |
-| Grouped uploads | neighboring misses take neighboring slots and are uploaded in a single copy | small |
+| Grouped uploads | neighboring misses take neighboring slots and are uploaded in a single copy | done |
 | Slots shared between layers of the same format | we measured that equal slots per layer are already within 1 point of the ceiling; low priority | medium |
 | Log of the choices for simulation outside the engine | `katana routing` already simulates; recording the trace of a real session is missing | small |
 
@@ -166,6 +166,31 @@ preload by the heat of the previous session.
 `src/engine/expert_tier.c`, measurements in knowledge.md 5c and comparisons.md 18. Next: contiguous per-expert sidecar file
 (+60% disk throughput), use the arena for the GPU upload path and the batch path of the VRAM cache, early router
 prediction also for Gemma 4, prefetch 2 layers ahead with a smaller N.
+
+**Frequency classes in eviction and grouped uploads: implemented, on by default, not measured (2026-11-28).**
+`src/engine/expert_tier.c`. Both reuse `et.ghot`, the per-(layer, expert) decayed-use counter the heat-based mixed
+quantization already tracks (independent of which slot holds the expert, so it survives eviction) instead of adding
+a second tracker. Frequency classes (`KATANA_EXPERT_CLASS=0` turns off): `et_fill` used to reset a slot's heat to 0
+whenever it took on a new expert, so a formerly hot expert came back from eviction "cold" and could be evicted again
+before re-accumulating use; now `et_slot_take` seeds the slot's heat from `et.ghot`, so accumulated use survives the
+round trip through eviction. `et_victim` buckets each candidate slot's heat into a class (`et_class`, the binary
+exponent of the heat, i.e. a discretized log2) and evicts the coldest class first, oldest (`stamp`) within that class
+breaking ties - the same outcome a queue-per-class design would give (the oldest member of the coldest non-empty
+queue leaves first), computed by the scan `et_victim` already did instead of separate queue structures, since
+`nslots` stays in the hundreds to low thousands. Grouped uploads (`KATANA_EXPERT_GROUP=0` turns off, package-only):
+when a layer switch misses several experts at once, `et_fill_grouped` asks `et_bx_pick` (factored out of `et_fill` so
+the single-request and grouped paths can never disagree on hi vs. cold) for each miss's file position, sorts them,
+and merges neighbors (gap of at most one record) into a single `EtGJob`, up to `ET_GMAX` (8) experts per read; one
+pool thread issues the one `pread` and splits it into each slot with `memcpy`. Isolated misses and the raw-GGUF path
+(no `.exb`) are unaffected (still one `pread` per expert). Neither change can alter which expert the router picked
+or the bytes that land in its slot - only residency order and read count. **Validated:** `katana bundle check` (hi
+and `cold`) still reports byte-identical against the mapped GGUF / a fresh requantization. With `KATANA_THREADS=1`
+(removes the thread pool's own floating-point reduction-order nondeterminism) a real greedy (temperature 0) generation
+on Qwen3.6-35B-A3B-UD-Q4_K_M produced byte-identical output across `KATANA_EXPERT_CLASS`/`KATANA_EXPERT_GROUP` on/off
+in every combination, and with `KATANA_EXPERT_POLICY=lru`; with the normal thread pool (no `KATANA_THREADS=1`), two
+runs of the *same* settings already differ (pre-existing nondeterminism from parallel reduction order, unrelated to
+this change). Nothing was measured for speed; `[expert_tier] leituras agrupadas: ...` at exit reports how many reads
+each grouped `pread` served (observed 2.0-2.1 experts/read on a 4 GB arena with Qwen3.6, not a controlled benchmark).
 
 **Cold-expert prefetch during the GPU wait: implemented, on by default, not measured (2026-11-26).**
 `src/engine/expert_pf.c`, hooks `pf_before` / `pf_after` around `vk_moe_ffn` in the Qwen3.6 one-token Vulkan path
