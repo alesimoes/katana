@@ -300,8 +300,25 @@ static void pack_k_scales(uint8_t *sc, const uint8_t *ls, const uint8_t *lm) {
     }
 }
 
+/* sem -ffast-math nestas funcoes (so aqui, via katana bundle/quantize): bundle check ... cold achou, no
+   celular real (Galaxy A56, ARM64) contra o notebook (x86), ~12% dos blocos Q2_K com byte diferente do que
+   foi gravado no x86, mesmo com os MESMOS floats dequantizados na entrada (dq_q4k_scalar/dq_q4k_neon
+   conferidos bit a bit, identicos nos dois lados) - nao e bug de dequant nem de arquitetura. E o -ffast-math
+   do gcc (build.sh, so no x86; o NDK clang do ARM nao usa) que (a) reassocia "(mx - mn) / nmax" como
+   "mx/nmax - mn/nmax" (1 ULP diferente, que pode mudar o nivel arredondado por qnear() num peso perto do
+   meio do caminho - erro real, mas do tamanho de 1 ULP, nao perceptivel contra o erro ja grande do Q2_K) e
+   (b) troca o sinal de -0.0 num "mn > 0 ? 0 : -mn" que da zero (esse sim numericamente inerte, 0.0 == -0.0).
+   Os dois juntos faziam bundle check ... cold "FALHAR" quase sempre sem ser por um peso realmente diferente.
+   Achado e corrigido comparando o binario do notebook com o celular real via adb (2026-11-28); com
+   -fno-fast-math aqui os dois ficam byte a byte identicos (testado com dados reais do Qwen3.6 no celular). */
+#if defined(__GNUC__) && !defined(__clang__)
+#define NO_FAST_MATH __attribute__((optimize("-fno-fast-math")))
+#else
+#define NO_FAST_MATH   /* clang (NDK/ARM) nao tem esse atributo e nao usa -ffast-math nesta TU: nao precisa */
+#endif
+
 /* escala/minimo por sub-bloco (quantizacao assimetrica de 'bits' bits, valores 0..nmax) */
-static void k_subscale(const float *xb, int cnt, int nmax, float *scale, float *vmin) {
+NO_FAST_MATH static void k_subscale(const float *xb, int cnt, int nmax, float *scale, float *vmin) {
     float mn = xb[0], mx = xb[0];
     for (int i = 1; i < cnt; i++) { if (xb[i] < mn) mn = xb[i]; if (xb[i] > mx) mx = xb[i]; }
     if (mn > 0) mn = 0;                 /* garante que o zero seja representavel */
@@ -310,7 +327,7 @@ static void k_subscale(const float *xb, int cnt, int nmax, float *scale, float *
 }
 
 /* Q4_K: bloco de 256 = f16 d, f16 dmin, 12 escalas, 128 nibbles (8 sub-blocos de 32, 4 bits) */
-static void enc_q4_k(const float *x, uint8_t *dst, size_t n) {
+NO_FAST_MATH static void enc_q4_k(const float *x, uint8_t *dst, size_t n) {
     for (size_t b = 0; b < n / 256; b++, x += 256, dst += 144) {
         float scales[8], mins[8], max_scale = 0, max_min = 0;
         for (int sb = 0; sb < 8; sb++) {
@@ -345,7 +362,7 @@ static void enc_q4_k(const float *x, uint8_t *dst, size_t n) {
 }
 
 /* Q5_K: bloco de 256 = f16 d, f16 dmin, 12 escalas, 32 bits altos, 128 nibbles (5 bits) */
-static void enc_q5_k(const float *x, uint8_t *dst, size_t n) {
+NO_FAST_MATH static void enc_q5_k(const float *x, uint8_t *dst, size_t n) {
     for (size_t b = 0; b < n / 256; b++, x += 256, dst += 176) {
         float scales[8], mins[8], max_scale = 0, max_min = 0;
         for (int sb = 0; sb < 8; sb++) {
@@ -430,7 +447,7 @@ static void enc_q6_k(const float *x, uint8_t *dst, size_t n) {
 }
 
 /* Q2_K: bloco de 256 = 16 escalas/minimos, 64 de 2 bits, f16 d, f16 dmin (16 sub-blocos de 16) */
-static void enc_q2_k(const float *x, uint8_t *dst, size_t n) {
+NO_FAST_MATH static void enc_q2_k(const float *x, uint8_t *dst, size_t n) {
     for (size_t b = 0; b < n / 256; b++, x += 256, dst += 84) {
         float scales[16], mins[16], max_scale = 0, max_min = 0;
         for (int is = 0; is < 16; is++) {
