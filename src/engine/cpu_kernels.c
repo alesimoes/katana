@@ -30,9 +30,15 @@ static float dot(const float *a, const float *b, int n) {
     return s;
 }
 
-/* memoria livre para uso agora (bytes; 0 = nao sei): no Linux, MemAvailable */
+/* memoria livre para uso agora (bytes; 0 = nao sei): Linux (MemAvailable) e Windows (GlobalMemoryStatusEx).
+   KATANA_RAM_AVAIL_MB forca o valor (so para teste, mesmo padrao de KATANA_VRAM_AVAIL_MB em vk_dense.c):
+   simula uma maquina com menos RAM livre sem precisar reiniciar ou trocar de hardware. */
 static uint64_t ram_avail(void) {
-#ifdef __linux__
+    if (getenv("KATANA_RAM_AVAIL_MB")) return (uint64_t)atoll(getenv("KATANA_RAM_AVAIL_MB")) << 20;
+#ifdef _WIN32
+    MEMORYSTATUSEX ms; ms.dwLength = sizeof ms;
+    return GlobalMemoryStatusEx(&ms) ? (uint64_t)ms.ullAvailPhys : 0;
+#elif defined(__linux__)
     FILE *f = fopen("/proc/meminfo", "r");
     char ln[160]; unsigned long long kb = 0;
     while (f && fgets(ln, sizeof ln, f)) if (sscanf(ln, "MemAvailable: %llu kB", &kb) == 1) break;
@@ -40,6 +46,17 @@ static uint64_t ram_avail(void) {
     return (uint64_t)kb << 10;
 #else
     return 0;
+#endif
+}
+/* RAM total da maquina (bytes; 0 = nao sei): mesmo padrao usado em catalog.c/launch.c/vk_moe.c.
+   KATANA_RAM_TOTAL_MB forca o valor (so para teste, ver KATANA_RAM_AVAIL_MB acima). */
+static uint64_t ram_total(void) {
+    if (getenv("KATANA_RAM_TOTAL_MB")) return (uint64_t)atoll(getenv("KATANA_RAM_TOTAL_MB")) << 20;
+#ifdef _WIN32
+    MEMORYSTATUSEX ms; ms.dwLength = sizeof ms;
+    return GlobalMemoryStatusEx(&ms) ? (uint64_t)ms.ullTotalPhys : 0;
+#else
+    return (uint64_t)sysconf(_SC_PHYS_PAGES) * (uint64_t)sysconf(_SC_PAGE_SIZE);
 #endif
 }
 /* cache KV da CPU em Q8_0 (hibrido DeltaNet): KATANA_CPU_KV8=0/1 forca. Padrao: so acima de 262144 de contexto e so se o

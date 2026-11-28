@@ -698,6 +698,7 @@ static int vk_setup(Model *m) {
     if (qd > maxc) maxc = qd;
     if ((size_t)c->hidden_dense > maxc) maxc = c->hidden_dense;
     if ((size_t)c->n_shared * H > maxc) maxc = (size_t)c->n_shared * H;
+    if ((size_t)c->ssm_inner > maxc) maxc = (size_t)c->ssm_inner;   /* DeltaNet/Mamba-2: wssm_out/wz tem ssm_inner colunas ou linhas */
     const size_t maxr = V > maxc ? V : maxc;
     gpu.vxb = kvk_buf_create(maxc * sizeof(float), KVK_USAGE_RW);
     gpu.vob = kvk_buf_create((maxr + 128) * sizeof(float), KVK_USAGE_RW);
@@ -705,7 +706,10 @@ static int vk_setup(Model *m) {
     gpu.used = (maxc + maxr + 128) * sizeof(float);
     if (c->mla || c->ssm_inner || c->g4) {
         mla_gpu_upload(m); kvk_wait();
-        if (c->ssm_inner) vkq_setup(m);      /* grafo completo do qwen35moe; se nao der, fica o modo hibrido */
+        /* grafo completo do qwen35moe (DeltaNet); granitehybrid (c->gr, tambem com ssm_inner > 0) tem o proprio
+           modo hibrido, chamado de dentro do mla_gpu_upload (vk_gr_build): formato de camada linear diferente
+           (Mamba-2, sem wz/walpha/wbeta), o vkq_setup nao serve para ele */
+        if (c->ssm_inner && !c->gr) vkq_setup(m);
         return 1;
     }
     const uint64_t budget = gpu_budget();
@@ -901,7 +905,6 @@ static void gpu_setup(Model *m) {
     const Config *c = &m->cfg;
     if (c->go) { fprintf(stderr, "GPU: gpt-oss ainda so na CPU (hibrido Vulkan pendente)\n"); return; }
     if ((c->glm || c->glmoe) && !getenv("KATANA_GLM_GPU")) { fprintf(stderr, "GPU: glm4 ainda so na CPU\n"); return; }
-    if (c->gr) { fprintf(stderr, "GPU: granitehybrid ainda so na CPU (Mamba-2 so tem caminho na CPU por enquanto)\n"); return; }
     const size_t d = c->dim, H = c->hidden, kvd = (size_t)c->n_kv * c->hd, V = c->vocab;
     const size_t ctx = c->ctx, qd = (size_t)c->n_heads * c->hd;
     size_t kv_layer = 2 * ctx * kvd * sizeof(float);

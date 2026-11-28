@@ -216,6 +216,7 @@ static size_t gpu_mat_bytes(const Mat *W, size_t rows, size_t cols);
 static int vk_mla_build(Model *m);
 static int vk_g4_build(Model *m);
 static int vk_qd_build(Model *m);
+static int vk_gr_build(Model *m);
 static struct {
     int ok, P;
     KvkBuf *an, *fn, *dg;           /* normas por camada; par gate/up das camadas densas */
@@ -245,7 +246,21 @@ static void mla_gpu_upload(Model *m) {
             snprintf(nm, sizeof nm, "L%03d.down", l); gpu_upload(&L->w_down, d, Hd, nm);
             continue;
         }
-        if (c->ssm_inner && L->lin) {       /* DeltaNet: qkv, portao z e saida (alpha/beta sao float, ficam na CPU) */
+        if (c->gr) {        /* granitehybrid: ssm_in/ssm_out (Mamba-2) ou wq/wk/wv/wo (atencao); MoE (toda camada,
+                               com especialista compartilhado) sobe no laco comum abaixo, igual aos outros MoE */
+            if (L->lin) {
+                const size_t di = c->ssm_inner, ng = c->ssm_groups, ds = c->ssm_state, nsh = c->ssm_rank;
+                const size_t d_in_proj = 2 * di + 2 * (size_t)ng * ds + nsh;
+                snprintf(nm, sizeof nm, "L%03d.ssmin", l);  gpu_upload(&L->wqkv, d_in_proj, d, nm);
+                snprintf(nm, sizeof nm, "L%03d.ssmout", l); gpu_upload(&L->wssm_out, d, di, nm);
+            } else {
+                const size_t kvd = (size_t)c->n_kv * c->hd;
+                snprintf(nm, sizeof nm, "L%03d.wq", l); gpu_upload(&L->wq, nh * c->hd, d, nm);
+                snprintf(nm, sizeof nm, "L%03d.wk", l); gpu_upload(&L->wk, kvd, d, nm);
+                snprintf(nm, sizeof nm, "L%03d.wv", l); gpu_upload(&L->wv, kvd, d, nm);
+                snprintf(nm, sizeof nm, "L%03d.wo", l); gpu_upload(&L->wo, d, nh * c->hd, nm);
+            }
+        } else if (c->ssm_inner && L->lin) {       /* DeltaNet: qkv, portao z e saida (alpha/beta sao float, ficam na CPU) */
             const size_t C = 2 * (size_t)c->ssm_groups * c->ssm_state + c->ssm_inner;
             snprintf(nm, sizeof nm, "L%03d.qkv", l);  gpu_upload(&L->wqkv, C, d, nm);
             snprintf(nm, sizeof nm, "L%03d.z", l);    gpu_upload(&L->wz, c->ssm_inner, d, nm);
@@ -282,11 +297,12 @@ static void mla_gpu_upload(Model *m) {
     gpu_upload(&m->lm_head, c->vocab, d, "head");
     gpu.n_gl = 0; gpu.on = 0; gpu.full = 0; gpu.mv_host = 1;
     fprintf(stderr, "GPU: %s%s (%.1f GB) - %s: camadas na CPU, %d produtos densos na GPU (%.0f MB usados)\n",
-            gpu.vk ? "Vulkan " : "", gpu.name, gpu.vram / 1073741824.0, c->mla ? "MLA" : c->g4 ? "gemma4" : "DeltaNet", gpu.n_up, gpu.used / 1048576.0);
+            gpu.vk ? "Vulkan " : "", gpu.name, gpu.vram / 1073741824.0, c->mla ? "MLA" : c->g4 ? "gemma4" : c->gr ? "granitehybrid" : "DeltaNet", gpu.n_up, gpu.used / 1048576.0);
     if (gpu.vk && c->mla) vk_mla_build(m);     /* prompt em lote: antes das vagas, que ficam com o resto da VRAM */
     if (c->n_expert && !host_moe_setup(m) && !gpu.vk) fprintf(stderr, "GPU: especialistas roteados na CPU\n");
     if (gpu.vk && c->g4) vk_g4_build(m);
     if (gpu.vk && c->ssm_inner && !c->n_expert) vk_qd_build(m);
+    if (gpu.vk && c->gr) vk_gr_build(m);
     if (vkml.ok && !vk_sg) {    /* o lote MLA usa as vagas (vk_moe_n); sem cache de especialistas (VRAM ocupada, KATANA_NOEXPCACHE) fica token a token */
         vkml.ok = 0;
         fprintf(stderr, "Vulkan: sem cache de especialistas: prompt MLA token a token\n");

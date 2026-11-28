@@ -1,5 +1,9 @@
 /* granitehybrid: definida em engine/granite.c (incluido depois deste arquivo, pois reusa matmat/AttJob/att_job daqui) */
 static void grh_layers_n(Model *m, int l0, int l1, int pos0, int B, float *X);
+/* granitehybrid em Vulkan (hibrido): definida em engine/vk_granite.c (incluido depois de granite.c, pelo mesmo motivo) */
+static float *vk_gr_n(Model *m, const int *toks, int B, int pos0, int want_logits);
+static int vk_gr_ready(void);
+static int vk_gr_pass(void);
 
 /* ---------- camadas na CPU em lote (prompt) ----------
    B tokens de uma vez: cada produto le a matriz uma vez para os B tokens (em vez de uma vez por token),
@@ -335,7 +339,14 @@ static float *forward(Model *m, int token, int pos, int want_logits) {
     const Config *c = &m->cfg;
     if (vis_rp || token >= VIS_BASE) vis_seq(m, &token, 1, pos);
     if (c->q4e) return q4_forward(m, &token, 1, pos, want_logits);
-    if (c->gr) { embed_row(m, m->x, token); grh_layers_n(m, 0, c->n_layers, pos, 1, m->x); return want_logits ? cpu_head(m) : NULL; }
+    if (c->gr) {
+        /* decodificacao (1 token): o lote da GPU (vk_gr_n) aceita B=1, mas o produto cooperativo dele e pensado
+           para lotes maiores - mesma medida do gemma4 (ida e volta por camada custa mais que o produto token a
+           token da CPU). Por isso o padrao fica na CPU; KATANA_VK_GR_DEC=1 forca a GPU tambem aqui. */
+        if (vk_gr_ready() && !gpu.force_cpu && getenv("KATANA_VK_GR_DEC") && atoi(getenv("KATANA_VK_GR_DEC")) != 0)
+            return vk_gr_n(m, &token, 1, pos, want_logits);
+        embed_row(m, m->x, token); grh_layers_n(m, 0, c->n_layers, pos, 1, m->x); return want_logits ? cpu_head(m) : NULL;
+    }
     if (vkg.on && !gpu.force_cpu) return vk_forward_1(m, token, pos, want_logits);
     if (gpu.n_gl > 0 && !gpu.force_cpu) return gpu_forward_n(m, &gpu.set[gpu.n_sets - 1], &token, pos, want_logits);
     /* gemma4 (modo hibrido): sem grafo gravado proprio; o lote da GPU (vk_g4_n) aceita B=1, mas o produto
@@ -394,6 +405,15 @@ static float *forward_seq_in(Model *m, const int *toks, int n, int pos0, int wan
     vis_seq(m, toks, n, pos0);      /* sem imagem nenhuma, nao faz nada */
     if (m->cfg.q4e) return q4_forward(m, toks, n, pos0, want_logits);
     if (m->cfg.gr) {
+        if (vk_gr_ready() && !gpu.force_cpu && vk_batch_min() <= n) {      /* granitehybrid em Vulkan: lote proprio */
+            while (n - i >= vk_batch_min()) {
+                const int nb = n - i < vk_gr_pass() ? n - i : vk_gr_pass();
+                lg = vk_gr_n(m, toks + i, nb, pos0 + i, want_logits && i + nb == n);
+                i += nb;
+            }
+            for (; i < n; i++) lg = forward(m, toks[i], pos0 + i, want_logits && i == n - 1);
+            return lg;
+        }
         const int d = m->cfg.dim;
         static float *X;
         if (!X) X = xalloc((size_t)GPU_BMAX * d, sizeof(float));
