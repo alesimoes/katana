@@ -148,7 +148,7 @@ counts 1..9 at unaligned starts, and `silu_mul_v`. Result: relative difference o
 SiLU polynomial plus summation order), `silu_mul_v` 3e-7. `MOEB_CHECK=1 moebench <model.gguf>` does the same on
 real expert tensors (written, not run). `katana lbtest` still passes.
 
-### 3.3 8-bit activations, AVX-512 VNNI (512-bit) and 8 rows per step (`src/engine/cpu_kernels.c`, implemented 2026-11-28, NOT measured)
+### 3.3 8-bit activations, AVX-512 VNNI (512-bit) and 8 rows per step (`src/engine/cpu_kernels.c`, implemented 2026-11-28, measured on the real model 2026-11-28: not safe, stays off)
 
 Builds on top of the existing VNNI path (`dot_q4k_v`/`dot_q6k_v`/`dot_q4k_v4`/`dot_q6k_v4`, which already used
 `vpdpbusd` at 256-bit width with an EXACT 16-bit activation split into two signed 8-bit halves, `qh`/`ql`, two
@@ -199,16 +199,28 @@ is unmeasured and untested on Qwen3.6 generation (not just `qtest`/`moebench` sy
 `MOEB_SYNTH=1 tools/moebench/moebench x` (section 3.2's check) still passes unchanged: nothing above touches
 `moe_cpu_multi`, `moe_rows`, `dot_q4k_v4`/`dot_q6k_v4` or `silu_mul_v`.
 
-**Not done — wiring into the live MoE path.** The three kernels above are new building blocks with the same
-signature shape as `dot_q4k_v4`/`dot_q6k_v4` (`dot_q4k_r8`/`dot_q6k_r8`) or as `dot_q4k_v`/`dot_q6k_v`
-(`dot_q4k_v8`/`dot_q4k_v8w`), ready to be selected from `moe_rows` in `src/engine/vk_dense.c` (which currently
-calls `dot_q4k_v4`/`dot_q6k_v4` under `KATANA_MOE_ROWS`) and from `dot_row` in this file (which calls
-`dot_q4k_v`/`dot_q6k_v`). Neither call site was touched in this session: `vk_dense.c` and `qwen35.c`'s `g4_*`
-functions were locked for a concurrent session working on the Gemma 4 GPU path at the same time. Wiring them in
-is a small change (a size check plus the three env switches, `KATANA_ACT8`/`KATANA_VNNI512`/`KATANA_MOE_ROWS8`,
-following the `KATANA_MOE_ROWS`/`moe_opt_rows` pattern) but needs: (a) deciding whether the 8-bit activation's
-~3e-4 error is acceptable for the MoE expert path specifically (not the general dense/attention path, where no
-change was made), and (b) `vk_dense.c` being free to edit again.
+**Wired in, measured on the real model 2026-11-28 (result: NOT safe, stays off).** `dot_q4k_r8`/`dot_q6k_r8` are
+now called from `moe_rows` in `src/engine/vk_dense.c`, as an extra level ahead of the exact 4-row/16-bit path,
+gated by `KATANA_MOE_ROWS8=1` (off by default, unlike the other `moe_rows` switches) and by `KATANA_ACT8`/
+`cpu_vnni`/`act8_opt`. `katana selftest --deep --tokens 16 --only int1,int16` on
+`Qwen3.6-35B-A3B-UD-Q4_K_M.gguf`, switch off (baseline, `/tmp/deep_off.log`) versus on:
+
+| caminho | KL medio (off -> on) | KL max (off -> on) | trocas de argmax (off -> on) | erro por camada, pior (off -> on) |
+|---|---|---|---|---|
+| CPU inteira, 1 a 1 | 1.38e-08 -> 1.12e-03 | 3.35e-08 -> 2.74e-03 | 0 -> 1 (de 16 posicoes) | 2.2e-04 (L31) -> 8.4e-02 (L36) |
+| CPU inteira, lote 16 | 7.19e-09 -> 3.82e-04 | 7.19e-09 -> 3.82e-04 | 0 -> 0 | 1.9e-04 (L31) -> 8.4e-02 (L36) |
+
+Com o switch ligado o roteador tambem escolhe 48 especialistas diferentes dos da referencia so nos 16 tokens
+testados (a primeira diferenca ja no token 0, camada 33, onde a margem relativa da referencia era 4.8e-02) e
+troca o token escolhido (argmax) em 1 das 16 posicoes no caminho 1 a 1. O KL fica 4-5 ordens de grandeza pior
+que o caminho exato (16 bits) e o erro por camada sobe de ~1e-4 para ~6-8e-2 em media/pior caso. **Conclusao: o
+erro e grande demais para confiar em producao** — o ganho de velocidade (uma unica rodada informal de
+`katana run ... "Oi, como vai?" 30 0.5`, sem benchmark formal: 23.9 -> 28.4 tok/s de geracao, switch desligado
+vs ligado) nao compensa mudar a escolha de token e de especialistas. O texto gerado ficou coerente nos dois
+casos (resposta normal em portugues), mas isso nao cobre o roteador trocar especialista em 48 escolhas dentre
+poucos tokens — o risco cresce com o contexto. `KATANA_MOE_ROWS8` fica desligada por padrao; os kernels
+continuam disponiveis atras do switch para quem quiser medir qualidade versus velocidade em outro caso de uso,
+mas o dono decidiu nao ligar por padrao com este resultado.
 
 ## 4. Expert cache (MoE)
 
