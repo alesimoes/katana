@@ -441,15 +441,43 @@ always come before the layers that share from them. Feed-forward width per layer
 from the `feed_forward_length` array when present (new array parsing in `model.c`, alongside the existing
 `sliding_window_pattern`/`head_count_kv` one), else the old scalar (26B-A4B, unaffected).
 
-### What stayed on CPU and why
+### GPU (Vulkan) for E2B/E4B (working since 2026-11-28)
 
-`src/engine/vk_gemma4.c`'s GPU path (`vk_g4_build`) and the generic hybrid upload (`mla_gpu_upload` in
-`shards.c`, despite the name, also used by `gemma4`) assume one feed-forward width and a K/V matrix for every
-layer; neither holds for E2B. Rather than guess a formula for the GPU side, both are turned off for any
-`gemma4` model with `ple_dim` or `kv_shared_n` set (`c->g4 && (c->ple_dim || c->kv_shared_n)`, checked in
-`gpu_setup` and `vk_g4_build`), falling back to the CPU path cleanly (a message, not a crash). The CPU path
-(`g4_layer`, `g4_layers_n`) has no such limit and is what is verified below. Picking up PLE/K-V-sharing on the
-GPU, if wanted later, is new work (not started).
+`src/engine/vk_gemma4.c`'s hybrid path (`vk_g4_build`/`vk_g4_n`: the big products — `wq`/`wk`/`wv`/`wo`,
+`gate`/`up`/`down` — go to the GPU each layer, round trip per layer; norms, RoPE, cache writes and attention
+stay on the CPU, same split as the already-working 26B-A4B) now covers PLE and K/V sharing too, for both the
+prompt (batch, `vk_g4_n` with B tokens) and generation (one token at a time: `forward()` now falls through to
+`vk_g4_n` with B=1 when `vkg4.ok`, same function as the batch path). The old blanket `c->g4 && (c->ple_dim ||
+c->kv_shared_n)` bail-out in `gpu_setup`/`vk_g4_build` is gone.
+
+- **K/V sharing**: a layer with `kv_shared` skips the `wk`/`wv` GPU dispatch and the cache write entirely (there
+  is nothing to compute or write — `model.c` already points `kv_off`/`kv_cap` at the donor layer); `q` still
+  goes through the GPU and gets RoPE on the CPU same as any layer. The attention kernel reads the donor's
+  cache without knowing it is shared, exactly like the CPU path.
+- **PLE stays on CPU**, by choice, inside `vk_g4_n` (same formula as `g4_layer`, reusing `g4_ple_prep` for the
+  per-token table): `per_layer_inp_gate`/`per_layer_proj` are `dim x 256`/`256 x dim`, tiny next to the main
+  `1536x6144..12288` feed-forward — one more GPU round trip per layer for ~0.4M MACs would not pay for itself.
+  Everything bigger stays on the GPU.
+- **A real bug found and fixed along the way**: `gemma4.feed_forward_length` is an array in this GGUF —
+  6144 for layers 0-14, 12288 for 15-34 (`Layer.hidden_l`, already read correctly by the CPU path).
+  `mla_gpu_upload` (`shards.c`), used for every `gemma4` model's GPU upload, was uploading `w_gate`/`w_up`/
+  `w_down` using `c->hidden_dense` (the *largest* width across layers, 12288) for every layer instead of each
+  layer's own `hidden_l`. This was never caught before because every `gemma4` model previously enabled for GPU
+  (the 26B-A4B) has one uniform width, so `c->hidden_dense` and `hidden_l` always agreed; E2B's two different
+  widths exposed it immediately (`katana selftest` on E2B: wrong logits, `produtos: FALHOU`, the per-matrix
+  `ffn_down` GPU check off by 1.12e-01 for the narrower layers once GPU upload was turned on for E2B). Fixed by
+  uploading each layer with its own `L->hidden_l`; `vk_g4_build`/`vk_g4_n` now read `L->hidden_l` per layer too
+  (`c->hidden_dense`/the old single `Hd` is kept only to size the shared work buffers, generously, for the
+  widest layer).
+- **Decoding: measured, not assumed, which path is faster**. `vk_g4_n`'s GPU products use a cooperative-matrix
+  batched GEMM, built for B >= 2 (the prompt). Routing one-token generation through it (B=1) works and is
+  correct, but on the RTX 3050 with this 2.8B model it measured **~17 tok/s**, slower than just letting the
+  existing CPU path (`cpu_layers`/`g4_layer`) run, which already had its own lighter-weight opportunistic GPU
+  path (`vk_matvecs` in `shards.c`: one upload, several matvec dispatches, one read-back) — once GPU upload is
+  enabled at all for E2B, `g4_layer` picks it up for free and measured **~36 tok/s**. Not a formal benchmark,
+  just what `katana run`'s own counter printed, run twice to check it wasn't noise. Given that, `vk_g4_n` on
+  B=1 defaults **off**; `KATANA_VK_G4DEC=1` turns it on for whoever wants to compare on different hardware.
+  The batch path (prompt) always uses `vk_g4_n`, unaffected by this switch.
 
 ### Numeric verification (`katana selftest`, no reference engine, as the project requires)
 
@@ -465,18 +493,32 @@ GPU, if wanted later, is new work (not started).
   about `gemma4`'s per-layer head width/FFN width/shared K/V and was excluded for `c->g4` (`&& !c->g4`), since
   it would read past a layer's real tensor size or dereference the empty K/V of a shared layer.
 - **Regression**: the 26B-A4B (`models/gemma-4-26B-A4B-it-UD-Q4_K_M.gguf`) still passes every check above
-  unchanged (25233.1M parameters, same as before; GPU hybrid still engages for it, since it has neither PLE nor
-  shared K/V).
-- **End to end**: `katana run models/gemma4e2b/model.gguf "The capital of Japan is"` -> `Tokyo.`;
-  `"2 + 2 ="` -> `4\n\nThis is a simple arithmetic example.`; `"List three colors."` -> `Red, Blue, Green`.
-  Coherent, correct, stops at EOS. This is the actual logits-to-text check the project asks for, since there is
-  no reference engine to diff against.
+  unchanged (25233.1M parameters, same as before; GPU hybrid, including the expert-slot MoE cache, still
+  engages for it, since it has neither PLE nor shared K/V and one feed-forward width).
+- **GPU vs CPU, E2B, after the Vulkan path above** (same `katana selftest` block that drives `forward_seq`/
+  `forward` for every architecture, 23 synthetic tokens, exact-CPU reference): batch (`vk_g4_n`, prompt) vs
+  exact CPU, worst logit difference **0.000429**; token by token (generation, through `forward()`, GPU upload
+  on but `vkg4.ok` decode path off by default so this exercises `g4_layer`+`vk_matvecs`) vs exact CPU, worst
+  difference **0.000035**; both same argmax as the CPU reference and well inside the tolerance (0.05) the
+  project already uses for every other architecture's GPU-vs-CPU check. With `KATANA_VK_G4DEC=1` (forcing
+  `vk_g4_n` at B=1 for decoding too) the difference is 0.000429 as well, same order. All "produtos" per-matrix
+  checks (including the new `ple_inp_gate`/`ple_proj`) pass at ~1e-8, same as the 26B-A4B.
+- **End to end, GPU and CPU**: `katana run models/gemma4e2b/model.gguf "Oi, como vai?" 30 0.5` — coherent
+  Portuguese in both `KATANA_CPU=1` (pure CPU) and the default (GPU) run, and in a 600-token run crossing the
+  512-token local attention window (so the ring buffer wraps and the shared-K/V donor layers keep being read
+  correctly past that point) — no garbled text, no crash. `katana run models/gemma4e2b/model.gguf "The capital
+  of Japan is"` -> `Tokyo.`; `"2 + 2 ="` -> `4\n\nThis is a simple arithmetic example.`; `"List three
+  colors."` -> `Red, Blue, Green`. This is the actual logits-to-text check the project asks for, since there is
+  no reference engine to diff against; tok/s printed by `katana run` itself (not a controlled benchmark): CPU
+  ~3.6-3.8 tok/s generation, GPU (default) ~32-36 tok/s generation and ~50-70 tok/s on the prompt, on the same
+  RTX 3050 Laptop (4 GB).
 
 ### Left for later (not started)
 
 - **Vision and audio** (the "any-to-any" tag in the GGUF): need the per-layer image/audio embedding tables and
   the encoders; this GGUF only ships the text tower. Out of scope for this pass by request.
-- **GPU (Vulkan) for E2B/E4B**: see above; falls back to CPU today.
+- **PLE on the GPU**: deliberately left on the CPU (see above) — small enough that it likely never pays for an
+  extra round trip, but not measured in isolation.
 - **`katana pack`/shards, `katana tune`, the expert-cache machinery**: not applicable (no experts) or not
   exercised for this model yet.
 
