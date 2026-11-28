@@ -552,7 +552,7 @@ static int c2_gdecl(CP *c, int i, int b, int parent, int mode, int dp) {
         }
         if (how == 6 || how == 2 || how == 8) {
             int pn_ = k - 1; while (pn_ > kw && cp_p(c, pn_, ']')) pn_ = c->mt[pn_] - 1;
-            if (how == 2 && !inclass && L == CL_DART && false) return 0;
+            if (how == 2 && !inclass && L == CL_DART && 0) return 0;
             if (cp_idt(c, pn_) && pn_ > kw && !cp_kwtok(c, pn_, C2_NOFN) && (inclass || L == CL_DART || L == CL_GROOVY || L == CL_CS)) {
                 size_t eb; int nx = c2_stmt_end(c, k, b, nl && how != 2 && how != 6 ? 1 : (L == CL_GROOVY ? 1 : 0), &eb);
                 if (how == 8) { nx = k; eb = c->tk[k - 1].b; }
