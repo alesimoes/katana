@@ -1340,9 +1340,26 @@ typedef struct { const Mat *eg, *eu, *ed; const int *ex, *xi; int H, d; float *h
 static int moe_int(const Mat *W) {
     return mat_int(W) || (HAVE_INT_DOT && !cpu_exact && W->q && (W->type == T_Q8_0 || W->type == T_Q5_1));
 }
+/* Q2_K sem kernel inteiro dedicado (aparece na copia fria do pacote de especialistas, expert_tier.c
+   "quantizacao mista por calor", e em especialistas que 'katana quantize'/'prepare' tenham escolhido Q2_K):
+   dot_row cai no ramo generico (dequantiza a linha e multiplica por x em float), mas o caminho dos
+   especialistas so guarda a entrada quantizada (xq, int16 por bloco de 256) e chama com x=NULL -- por isso
+   precisa do kernel proprio aqui, reconstruindo a entrada do xq em vez de usar x. */
+static float moe_dot_q2k(const uint8_t *row, int cols) {
+    const XQ *q = xq_tls ? xq_tls : &xq0;
+    const size_t rb = qbytes(T_Q2_K, 256);
+    float tmp[256], xf[256], total = 0.0f;
+    for (int b = 0; b < cols / 256; b++) {
+        dequant(T_Q2_K, row + (size_t)b * rb, tmp, 256);
+        for (int j = 0; j < 256; j++) xf[j] = q->q[b * 256 + j] * q->xs[b];
+        total += dot(tmp, xf, 256);
+    }
+    return total;
+}
 static inline float moe_dot(const Mat *W, size_t r, int cols) {
     if (W->type == T_Q8_0) return dot_q8_i(W->q + r * W->stride, cols);
     if (W->type == T_Q5_1) return dot_q51_i(W->q + r * W->stride, cols);
+    if (W->type == T_Q2_K) return moe_dot_q2k(W->q + r * W->stride, cols);
     return dot_row(W, r, NULL, NULL, cols);
 }
 /* opcoes do caminho frio dos especialistas, todas ligadas (=0 desliga):
