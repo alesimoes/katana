@@ -1412,7 +1412,7 @@ static void main_usage(FILE *f) {
         "  katana snapreplay <modelo> <.ksess...>  tokens relidos por compactacao, com e sem copias (sem rodar o modelo)\n"
         "  katana attbench [posicoes...]         custo da atencao (qwen35moe) por posicao, sem modelo\n"
         "  katana iobench <arquivo> [bloco_KB] [leituras] [bufferizado]   leitura aleatoria do disco (threads e io_uring)\n"
-        "  katana bundle <modelo.gguf> | check <modelo.gguf> [passo] [scattered] | bench <modelo.gguf> [rodadas] [scattered]   pacote .exb: gate+up+down de cada especialista juntos, uma leitura por especialista com KATANA_EXPERT_RAM\n"
+        "  katana bundle <modelo.gguf> | check <modelo.gguf> [passo] [scattered] [cold] | bench <modelo.gguf> [rodadas] [scattered]   pacote .exb: gate+up+down de cada especialista juntos, uma leitura por especialista com KATANA_EXPERT_RAM; copia fria por especialista frio (quantizacao mista, KATANA_BUNDLE_COLD=0 desliga)\n"
         "  katana run  <modelo.gguf> \"texto\" [max_tokens] [temperatura]\n"
         "  katana chat <modelo.gguf> \"pergunta\" [max_tokens] [temperatura]\n"
         "                                 --image ARQ (run, chat, agent): imagem na mensagem, com o projetor mmproj*.gguf ao lado do modelo\n"

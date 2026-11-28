@@ -25,6 +25,19 @@
  *
  * Um token nunca usa especialista que o roteador nao escolheu: a previsao so adianta leituras; o que o roteador
  * escolhe e pedido na hora (se a arena nao comporta os pedidos de uma chamada, a chamada usa o caminho mapeado).
+ *
+ * Quantizacao mista por calor (EdgeMoE/arXiv:2308.14352, "LLM in a Flash"/arXiv:2312.11514): o pacote pode gravar,
+ * alem da copia na quantizacao original (hi), uma segunda copia menor de cada especialista, requantizada mais
+ * agressiva (cold_type, Q2_K por padrao; KATANA_BUNDLE_COLD=0 desliga ao gravar o pacote). As duas copias ficam em
+ * posicoes separadas do arquivo, cada uma alinhada a pagina e lida inteira numa leitura so (gate+up+down juntos,
+ * como antes); a arena nunca le as duas. Escolhida a mais simples das opcoes discutidas: nada de estatistica
+ * persistida entre sessoes nem de reescrever o pacote sob comando - o calor ja rastreado por especialista
+ * (et.ghot, mesma ideia do heat por vaga, so que por (camada, especialista) e nao por vaga, entao sobrevive ao
+ * especialista ser despejado) decide na hora de cada leitura: abaixo da media global, le a copia fria (menos
+ * bytes do disco); do contrario le a hi. Um especialista nunca visto neste processo comeca "quente" (ve a copia
+ * cheia primeiro) e so cai pra fria depois de ficar repetidamente abaixo da media. O tipo da matriz (Mat.type e
+ * .stride) muda por chamada conforme a vaga que serviu o pedido: o motor ja escolhe o kernel pelo tipo de cada
+ * Mat, entao misturar hi e fria no mesmo lote de tokens funciona sem mudar os kernels de produto.
  * Medidas (katana tiersim ...) e o teste de leitura aleatoria do disco (katana iobench) ficam no fim do arquivo. */
 #ifdef __linux__
 #include <errno.h>
@@ -47,17 +60,23 @@ typedef struct {
     uint64_t stamp;             /* ultimo uso */
     uint64_t ptick;             /* token em que a previsao a pediu */
     double heat;                /* frequencia com decaimento (escala crescente) */
+    int cold;                   /* 1 = a vaga tem a copia fria (et.cold_type), nao a original */
     size_t doff[3];             /* onde os dados de cada matriz comecam na vaga */
 } EtSlot;
 typedef struct { int slot; size_t dst, off, len; } EtJob;      /* le [off, off+len) do arquivo para vaga + dst */
-/* pacote de especialistas (<modelo>.exb): cabecalho, indice (um EtBx por camada x especialista) e os registros */
-#define ET_BX_MAGIC "KTNEXB01"
-typedef struct { char magic[8]; uint32_t L, E; uint64_t gguf_size, data_start; uint8_t pad[32]; } EtBxHdr;
+/* pacote de especialistas (<modelo>.exb): cabecalho, indice (um EtBx por camada x especialista) e os registros.
+   v02: cada registro pode ter, alem do hi (quantizacao original), uma copia fria (cold_type, 0 = pacote sem
+   copia fria) numa posicao separada do arquivo, tambem alinhada a pagina. */
+#define ET_BX_MAGIC "KTNEXB02"
+typedef struct { char magic[8]; uint32_t L, E; uint64_t gguf_size, data_start; uint32_t cold_type; uint8_t pad[28]; } EtBxHdr;
 typedef struct {
-    uint64_t pos;               /* inicio do registro no pacote (multiplo de pagina) */
-    uint64_t src[3];            /* onde cada matriz esta no GGUF (confere o pacote com o modelo) */
-    uint32_t len[3], rel[3];    /* tamanho de cada matriz e onde ela comeca dentro do registro */
-    uint32_t rec, pad;          /* tamanho do registro, arredondado para paginas */
+    uint64_t pos;               /* inicio do registro hi no pacote (multiplo de pagina) */
+    uint64_t src[3];            /* onde cada matriz hi esta no GGUF (confere o pacote com o modelo) */
+    uint32_t len[3], rel[3];    /* tamanho de cada matriz hi e onde ela comeca dentro do registro */
+    uint32_t rec, pad;          /* tamanho do registro hi, arredondado para paginas */
+    uint64_t cpos;              /* inicio do registro frio (0 = este especialista nao tem copia fria) */
+    uint32_t clen[3], crel[3];  /* tamanho/posicao de cada matriz na copia fria */
+    uint32_t crec, pad2;        /* tamanho do registro frio, arredondado para paginas */
 } EtBx;
 static struct {
     int L, E, K, nslots, nthr, direct, policy, pred, pfn, pfd, fd, last_l;
@@ -73,8 +92,12 @@ static struct {
     double bytes, t_stall, t_read; uint64_t reads;
     double t_pred;
     EtBx *bx;                   /* indice do pacote; NULL = le as tres regioes do GGUF */
+    /* quantizacao mista por calor (so com pacote): calor global por especialista, independente da vaga que o
+       guarda (sobrevive ao despejo), e a soma de todos pra comparar com a media sem recalcula-la a cada leitura */
+    double *ghot; double gsum; uint32_t cold_type; uint64_t fetch_hot, fetch_cold;
 } et;
 static int et_no_bundle;        /* katana bundle check|bench ... scattered: ignora o pacote (comparar os dois caminhos) */
+static int et_force_cold, et_force_hot;   /* katana bundle check ... cold: forca hi ou fria nos testes, ignorando o calor */
 
 static int et_pread_full(int fd, void *buf, size_t len, off_t off) {
     size_t got = 0;
@@ -133,9 +156,23 @@ static size_t et_bx_layout(const size_t off[3], const size_t len[3], size_t rel[
     for (int r = 0; r < 3; r++) { rel[r] = pos + ((off[r] - pos) & 63); pos = rel[r] + len[r]; }
     return (pos + ET_PG - 1) & ~(size_t)(ET_PG - 1);
 }
+/* layout da copia fria: gate, up e down requantizados para cold_type, em sequencia, cada um alinhado a 64 bytes
+   (nao precisa casar com o alinhamento do GGUF, que so existe pra o tipo original). Os tres tem o mesmo numero
+   de elementos (hidden*dim: gate/up tem hidden linhas de dim colunas, down tem dim linhas de hidden colunas, o
+   produto e igual), so o tipo muda o tamanho em bytes. Devolve 0 (sem copia fria) se cold_type for 0 ou n nao for
+   multiplo do bloco desse tipo (nao acontece nos modelos do catalogo, e um especialista so sem copia fria). */
+static size_t et_bx_cold_layout(const Config *c, uint32_t cold_type, uint32_t clen[3], uint32_t crel[3]) {
+    const size_t ne = (size_t)c->hidden * (size_t)c->dim;
+    const size_t cb = cold_type ? qbytes(cold_type, ne) : 0;
+    if (!cb) { clen[0] = clen[1] = clen[2] = 0; crel[0] = crel[1] = crel[2] = 0; return 0; }
+    size_t pos = 0;
+    for (int r = 0; r < 3; r++) { clen[r] = (uint32_t)cb; crel[r] = (uint32_t)pos; pos += (cb + 63) & ~(size_t)63; }
+    return (pos + ET_PG - 1) & ~(size_t)(ET_PG - 1);
+}
 static void et_bx_name(char *out, size_t cap, const char *model) { snprintf(out, cap, "%s.exb", model); }
-/* abre o pacote do modelo e confere com ele; devolve o indice ou NULL (sem pacote, ou pacote de outro arquivo) */
-static EtBx *et_bx_open(const Model *m, const char *model, int L, int E, int *fd_out, int direct) {
+/* abre o pacote do modelo e confere com ele; devolve o indice ou NULL (sem pacote, ou pacote de outro arquivo).
+   cold_type_out recebe o tipo da copia fria do pacote (0 = pacote sem copia fria). */
+static EtBx *et_bx_open(const Model *m, const char *model, int L, int E, int *fd_out, int direct, uint32_t *cold_type_out) {
     char fn[1100]; et_bx_name(fn, sizeof fn, model);
     struct stat sg, sb;
     int fd = open(fn, O_RDONLY);
@@ -148,18 +185,28 @@ static EtBx *et_bx_open(const Model *m, const char *model, int L, int E, int *fd
     bx = xalloc(n, sizeof(EtBx));
     if (et_pread_full(fd, bx, n * sizeof(EtBx), sizeof h) != 0) goto bad;
     why = "indice nao confere com o modelo";
-    for (int l = 0; l < L; l++) for (int e = 0; e < E; e++) {
-        const EtBx *b = &bx[(size_t)l * E + e];
-        size_t off[3], len[3], rel[3];
-        if (!et_regions(m, l, e, off, len)) goto bad;
-        const size_t rec = et_bx_layout(off, len, rel);
-        for (int r = 0; r < 3; r++) if (b->src[r] != off[r] || b->len[r] != len[r] || b->rel[r] != rel[r]) goto bad;
-        if (b->rec != rec || (b->pos & (ET_PG - 1)) || b->pos < h.data_start || b->pos + rec > (uint64_t)sb.st_size) goto bad;
+    {
+        uint32_t clen[3], crel[3];
+        const size_t crec = et_bx_cold_layout(&m->cfg, h.cold_type, clen, crel);
+        for (int l = 0; l < L; l++) for (int e = 0; e < E; e++) {
+            const EtBx *b = &bx[(size_t)l * E + e];
+            size_t off[3], len[3], rel[3];
+            if (!et_regions(m, l, e, off, len)) goto bad;
+            const size_t rec = et_bx_layout(off, len, rel);
+            for (int r = 0; r < 3; r++) if (b->src[r] != off[r] || b->len[r] != len[r] || b->rel[r] != rel[r]) goto bad;
+            if (b->rec != rec || (b->pos & (ET_PG - 1)) || b->pos < h.data_start || b->pos + rec > (uint64_t)sb.st_size) goto bad;
+            if (crec == 0) { if (b->cpos) goto bad; }
+            else {
+                for (int r = 0; r < 3; r++) if (b->clen[r] != clen[r] || b->crel[r] != crel[r]) goto bad;
+                if (b->cpos && (b->crec != crec || (b->cpos & (ET_PG - 1)) || b->cpos < h.data_start || b->cpos + crec > (uint64_t)sb.st_size)) goto bad;
+            }
+        }
     }
     close(fd);
     fd = open(fn, O_RDONLY | (direct ? O_DIRECT : 0));
     if (fd < 0) { perror("expert_tier: open do pacote"); free(bx); return NULL; }
     *fd_out = fd;
+    if (cold_type_out) *cold_type_out = h.cold_type;
     return bx;
 bad:
     fprintf(stderr, "expert_tier: %s ignorado (%s); refaca com katana bundle\n", fn, why);
@@ -189,11 +236,16 @@ static void et_fill(Model *m, int s, int l, int e, int demand) {
         if (p->pf) et.pf_wasted++;
         et.where[p->key] = -1;
     }
-    p->key = l * et.E + e; et.where[p->key] = s; p->state = 1; p->pf = !demand; p->ptick = et.tick; p->heat = 0;
-    if (et.bx) {                                /* pacote: o registro inteiro numa leitura so */
+    p->key = l * et.E + e; et.where[p->key] = s; p->state = 1; p->pf = !demand; p->ptick = et.tick; p->heat = 0; p->cold = 0;
+    if (et.bx) {                                /* pacote: o registro inteiro (hi ou frio) numa leitura so */
         const EtBx *b = &et.bx[p->key];
-        for (int r = 0; r < 3; r++) p->doff[r] = b->rel[r];
-        EtJob j = { s, 0, (size_t)b->pos, b->rec };
+        /* calor deste especialista contra a media global: abaixo da media (e com copia fria) le a fria, que e
+           menos bytes; et_force_cold/et_force_hot forcam a escolha nos testes (katana bundle check ... cold) */
+        const int cold = b->cpos && (et_force_cold || (!et_force_hot && et.ghot[p->key] * (double)(et.L * et.E) < et.gsum));
+        p->cold = cold;
+        if (cold) { et.fetch_cold++; for (int r = 0; r < 3; r++) p->doff[r] = b->crel[r]; }
+        else { et.fetch_hot++; for (int r = 0; r < 3; r++) p->doff[r] = b->rel[r]; }
+        EtJob j = { s, 0, (size_t)(cold ? b->cpos : b->pos), cold ? b->crec : b->rec };
         p->pend = 1;
         if (demand) et.q[et.qt++ % et.qcap] = j; else et.pq[et.pqt++ % et.qcap] = j;
         pthread_cond_broadcast(&et.cv_job);
@@ -227,11 +279,18 @@ static int et_wrap(Model *m, const Layer *L, const int *ex, const int *xi, int n
     if (nu > et.nslots) { et.bypass++; return 0; }
     if (l <= et.last_l) {                                   /* novo token: a escala do calor cresce */
         et.tick++; et.grow /= et.decay;
-        if (et.grow > 1e100) { for (int s = 0; s < et.nslots; s++) et.sl[s].heat *= 1e-100; et.grow = 1.0; }
+        if (et.grow > 1e100) {
+            for (int s = 0; s < et.nslots; s++) et.sl[s].heat *= 1e-100;
+            if (et.ghot) { for (int i = 0; i < et.L * et.E; i++) et.ghot[i] *= 1e-100; et.gsum *= 1e-100; }
+            et.grow = 1.0;
+        }
     }
     et.last_l = l;
     pthread_mutex_lock(&et.mu);
     et.serial++;
+    if (et.ghot) for (int u = 0; u < nu; u++) {             /* calor global por especialista (sobrevive ao despejo da vaga) */
+        et.ghot[l * E + uniq[u]] += et.grow; et.gsum += et.grow;
+    }
     int *slot = xalloc(nu, 4); int *need = xalloc(nu, 4), nneed = 0;
     for (int u = 0; u < nu; u++) {                          /* 1) o que ja esta (ou esta vindo) */
         const int s = et.where[l * E + uniq[u]];
@@ -265,9 +324,15 @@ static int et_wrap(Model *m, const Layer *L, const int *ex, const int *xi, int n
         p->stamp = et.clock; p->heat += et.grow;
     }
     pthread_mutex_unlock(&et.mu);
+    const Config *cfg = &m->cfg;
     for (int u = 0; u < nu; u++) {                          /* Mats que apontam para a arena, com o mesmo alinhamento do arquivo */
         eg[u] = L->eg[uniq[u]]; eu[u] = L->eu[uniq[u]]; ed[u] = L->ed[uniq[u]];
         eg[u].q = et_slot_data(slot[u], 0); eu[u].q = et_slot_data(slot[u], 1); ed[u].q = et_slot_data(slot[u], 2);
+        if (et.sl[slot[u]].cold) {                          /* vaga com a copia fria: tipo e passo de linha trocados */
+            eg[u].type = eu[u].type = ed[u].type = et.cold_type;
+            eg[u].stride = eu[u].stride = (size_t)qbytes(et.cold_type, (size_t)cfg->dim);
+            ed[u].stride = (size_t)qbytes(et.cold_type, (size_t)cfg->hidden);
+        }
     }
     free(slot); free(need);
     Layer tmp = *L; tmp.eg = eg; tmp.eu = eu; tmp.ed = ed;
@@ -362,6 +427,12 @@ static void et_report(void) {
             "lidos %.2f GB em %llu leituras (%.2f s de thread), espera do token %.2f s, previsor %.2f s\n",
             (unsigned long long)et.pf_issued, (unsigned long long)et.pf_useful, (unsigned long long)et.pf_late,
             (unsigned long long)et.pf_wasted, et.bytes / 1073741824.0, (unsigned long long)et.reads, et.t_read, et.t_stall, et.t_pred);
+    if (et.cold_type) {
+        const uint64_t totf = et.fetch_hot + et.fetch_cold;
+        fprintf(stderr, "[expert_tier] quantizacao mista por calor: copia fria em %s; %llu leituras cheias, %llu frias (%.1f%%)\n",
+                qtype_name(et.cold_type), (unsigned long long)et.fetch_hot, (unsigned long long)et.fetch_cold,
+                totf ? 100.0 * et.fetch_cold / totf : 0.0);
+    }
 }
 
 /* liga a arena depois do modelo carregado (chamado no fim de load_model); sem KATANA_EXPERT_RAM nao faz nada */
@@ -387,8 +458,9 @@ static void et_init(Model *m, const char *path, const uint8_t *base) {
     const char *s;
     et.direct = (s = getenv("KATANA_EXPERT_DIRECT")) ? atoi(s) : 1;
     et.fd = -1;
-    if (!et_no_bundle) et.bx = et_bx_open(m, path, et.L, et.E, &et.fd, et.direct);
+    if (!et_no_bundle) et.bx = et_bx_open(m, path, et.L, et.E, &et.fd, et.direct, &et.cold_type);
     if (et.bx) { mx = 0; for (int i = 0; i < et.L * et.E; i++) if (et.bx[i].rec > mx) mx = et.bx[i].rec; }
+    if (et.bx && et.cold_type) et.ghot = xalloc((size_t)et.L * et.E, sizeof(double));   /* calor global por especialista: hi x fria */
     et.slot_bytes = (mx + ET_PG - 1) & ~(size_t)(ET_PG - 1);
     size_t ns = (size_t)(gb * 1073741824.0 / (double)et.slot_bytes);
     if (ns > (size_t)et.L * et.E) ns = (size_t)et.L * et.E;
@@ -426,6 +498,7 @@ static void et_init(Model *m, const char *path, const uint8_t *base) {
             et.pred == 0 ? "roteador antecipado" : et.pred == 1 ? "coocorrencia" : et.pred == 2 ? "token anterior" : "nenhuma",
             et.pfn, et.pfd, et.nthr, et.direct ? "O_DIRECT" : "com cache",
             et.bx ? "pacote .exb (1 leitura por especialista)" : "GGUF (3 leituras por especialista)");
+    if (et.cold_type) fprintf(stderr, "[expert_tier] quantizacao mista: especialistas abaixo da media de uso leem a copia fria (%s) do pacote\n", qtype_name(et.cold_type));
 }
 
 /* ====================== medidas: katana tiersim run|sim, katana iobench ======================
@@ -760,12 +833,28 @@ static int iob_main(int argc, char **argv) {
     return 0;
 }
 
+/* enc_block: app/main.c, incluido depois deste arquivo em katana.c (quantiza em blocos; katana quantize usa pra
+   requantizar um tensor inteiro, aqui usamos a mesma funcao pra gravar a copia fria de um especialista) */
+static void enc_block(uint32_t t, const float *x, uint8_t *dst, size_t n);
+
 /* ====================== katana bundle: pacote de especialistas ======================
- * bundle <modelo.gguf>                        grava <modelo.gguf>.exb (gate+up+down de cada especialista juntos)
- * bundle check <modelo.gguf> [passo] [scattered]   le cada especialista (ou um a cada `passo`) pelo caminho real da
- *                                             arena (fila, threads, O_DIRECT) e compara byte a byte com o GGUF mapeado
+ * bundle <modelo.gguf>                        grava <modelo.gguf>.exb (gate+up+down de cada especialista juntos,
+ *                                             e a copia fria de quem tiver: ver KATANA_BUNDLE_COLD acima)
+ * bundle check <modelo.gguf> [passo] [scattered] [cold]   le cada especialista (ou um a cada `passo`) pelo caminho
+ *                                             real da arena (fila, threads, O_DIRECT); sem `cold` compara a copia
+ *                                             hi byte a byte com o GGUF mapeado; com `cold` forca a copia fria e
+ *                                             compara com uma requantizacao recalculada agora (nao o que foi
+ *                                             gravado), a verdade independente do caminho de escrita
  * bundle bench <modelo.gguf> [rodadas] [scattered]   tempo para trazer K especialistas que nao estao na arena (o custo
  *                                             de uma camada sem acerto); `scattered` ignora o pacote e le do GGUF */
+/* bits por peso dos tipos que enc_block sabe gravar; os outros (so leitura) devolvem -1 e ficam de fora da copia
+   fria, que so vale a pena quando cold_type tem menos bits que o tipo original */
+static double etb_bpw(uint32_t t) {
+    switch (t) {
+        case T_Q8_0: return 8.5; case T_Q6_K: return 6.56; case T_Q5_K: return 5.5;
+        case T_Q4_K: return 4.5; case T_Q2_K: return 2.6; default: return -1;
+    }
+}
 static void etb_load(Model *m, const char *model, int arena) {
     memset(m, 0, sizeof *m);
     setenv("KATANA_CPU", "1", 1);
@@ -778,45 +867,78 @@ static void etb_load(Model *m, const char *model, int arena) {
 }
 static int etb_write(const char *model) {
     Model m; etb_load(&m, model, 0);
-    const int L = m.cfg.n_layers, E = m.cfg.n_expert; const size_t n = (size_t)L * E;
+    const Config *c = &m.cfg;
+    const int L = c->n_layers, E = c->n_expert; const size_t n = (size_t)L * E;
     struct stat sg;
     if (stat(model, &sg) != 0) die("nao li o tamanho do modelo");
+    const char *cv = getenv("KATANA_BUNDLE_COLD");
+    const uint32_t try_cold = (cv && !strcmp(cv, "0")) ? 0 : T_Q2_K;   /* Q2_K e o unico tipo que enc_block sabe gravar abaixo de Q4_K */
     EtBxHdr h; memset(&h, 0, sizeof h);
     memcpy(h.magic, ET_BX_MAGIC, 8); h.L = (uint32_t)L; h.E = (uint32_t)E; h.gguf_size = (uint64_t)sg.st_size;
-    h.data_start = (sizeof h + n * sizeof(EtBx) + ET_PG - 1) & ~(uint64_t)(ET_PG - 1);
     EtBx *bx = xalloc(n, sizeof(EtBx));
-    uint64_t pos = h.data_start; size_t mx = 0;
+    size_t mx = 0, mxc = 0; int n_cold = 0;
+    /* passo 1: geometria de cada especialista. hi sempre; fria so quando o tipo original tiver mais bits que
+       try_cold (senao requantizar nao reduz nada, so perde qualidade de graca) */
     for (int l = 0; l < L; l++) for (int e = 0; e < E; e++) {
-        EtBx *b = &bx[(size_t)l * E + e];
+        EtBx *b = &bx[(size_t)l * E + e]; memset(b, 0, sizeof *b);
         size_t off[3], len[3], rel[3];
         if (!m.layers[l].eg || !et_regions(&m, l, e, off, len)) die("especialistas nao quantizados ou nao empilhados");
         const size_t rec = et_bx_layout(off, len, rel);
         if (rec > 0xffffffffu) die("especialista grande demais para o pacote");
-        b->pos = pos; b->rec = (uint32_t)rec;
+        b->rec = (uint32_t)rec;
         for (int r = 0; r < 3; r++) { b->src[r] = off[r]; b->len[r] = (uint32_t)len[r]; b->rel[r] = (uint32_t)rel[r]; }
-        pos += rec; if (rec > mx) mx = rec;
+        if (rec > mx) mx = rec;
+        const double hb = etb_bpw(m.layers[l].eg[e].type);
+        uint32_t clen[3], crel[3];
+        const size_t crec = (try_cold && hb > 0 && etb_bpw(try_cold) < hb - 1e-6) ? et_bx_cold_layout(c, try_cold, clen, crel) : 0;
+        if (crec) {
+            b->crec = (uint32_t)crec; for (int r = 0; r < 3; r++) { b->clen[r] = clen[r]; b->crel[r] = crel[r]; }
+            if (crec > mxc) mxc = crec;
+            n_cold++;
+        }
+    }
+    h.cold_type = n_cold ? try_cold : 0;
+    /* passo 2: posicoes (hi e fria de cada especialista em sequencia, uma depois da outra) */
+    h.data_start = (sizeof h + n * sizeof(EtBx) + ET_PG - 1) & ~(uint64_t)(ET_PG - 1);
+    uint64_t pos = h.data_start, hi_total = 0, cold_total = 0;
+    for (size_t i = 0; i < n; i++) {
+        EtBx *b = &bx[i];
+        b->pos = pos; pos += b->rec; hi_total += b->rec;
+        if (b->crec) { b->cpos = pos; pos += b->crec; cold_total += b->crec; }
     }
     char fn[1100], tmp[1110]; et_bx_name(fn, sizeof fn, model); snprintf(tmp, sizeof tmp, "%s.tmp", fn);
     FILE *f = fopen(tmp, "wb");
     if (!f) die("nao criei o pacote");
-    uint8_t *rec = xalloc(mx, 1), *zero = xalloc(ET_PG, 1);
+    uint8_t *rec = xalloc(mx > mxc ? mx : mxc, 1), *zero = xalloc(ET_PG, 1);
+    float *fx = xalloc((size_t)c->hidden * c->dim, sizeof(float));
     int ok = fwrite(&h, sizeof h, 1, f) == 1 && fwrite(bx, sizeof(EtBx), n, f) == n;
     const size_t padn = (size_t)(h.data_start - (sizeof h + n * sizeof(EtBx)));
     if (padn) ok = ok && fwrite(zero, 1, padn, f) == padn;
     const double t0 = now_sec();
+    const size_t ne = (size_t)c->hidden * c->dim;
     for (int l = 0; l < L && ok; l++) {
         for (int e = 0; e < E && ok; e++) {
             const EtBx *b = &bx[(size_t)l * E + e];
+            const Mat *ms[3] = { &m.layers[l].eg[e], &m.layers[l].eu[e], &m.layers[l].ed[e] };
             memset(rec, 0, b->rec);
             for (int r = 0; r < 3; r++) memcpy(rec + b->rel[r], et_base + b->src[r], b->len[r]);
             ok = fwrite(rec, 1, b->rec, f) == b->rec;
+            if (ok && b->crec) {        /* copia fria: desquantiza a original e requantiza mais agressivo (katana quantize faz o mesmo com dequant+enc_block) */
+                memset(rec, 0, b->crec);
+                for (int r = 0; r < 3 && ok; r++) {
+                    dequant(ms[r]->type, et_base + b->src[r], fx, ne);
+                    enc_block(h.cold_type, fx, rec + b->crel[r], ne);
+                }
+                ok = fwrite(rec, 1, b->crec, f) == b->crec;
+            }
         }
         fprintf(stderr, "\rcamada %d de %d", l + 1, L);
     }
     ok = ok && fflush(f) == 0 && fsync(fileno(f)) == 0;
     if (fclose(f) != 0) ok = 0;
     if (!ok || rename(tmp, fn) != 0) { remove(tmp); die("falha ao gravar o pacote (disco cheio?)"); }
-    fprintf(stderr, "\n%s: %d camadas x %d especialistas, %.2f GB, registro de ate %.1f KB, %.0f s\n", fn, L, E, (double)pos / 1073741824.0, mx / 1024.0, now_sec() - t0);
+    fprintf(stderr, "\n%s: %d camadas x %d especialistas, %.2f GB na quantizacao original; %d especialistas com copia fria em %s (+%.2f GB); registro hi de ate %.1f KB; %.0f s\n",
+            fn, L, E, hi_total / 1073741824.0, n_cold, n_cold ? qtype_name(h.cold_type) : "-", cold_total / 1073741824.0, mx / 1024.0, now_sec() - t0);
     return 0;
 }
 /* pede o especialista (l, e) a arena como uma chamada de verdade; devolve a vaga (mutex tomado na volta nao) */
@@ -826,14 +948,20 @@ static int etb_request(Model *m, int l, int e) {
     et.sl[s].pin = et.serial; et.sl[s].pf = 0;
     return s;
 }
-static int etb_check(const char *model, int step, int scattered) {
+static int etb_check(const char *model, int step, int scattered, int cold) {
     Model m; et_no_bundle = scattered; etb_load(&m, model, 1);
+    if (cold && !et.cold_type) { fprintf(stderr, "bundle check cold: o pacote nao tem copia fria (refaca com katana bundle)\n"); return 1; }
+    et_force_cold = cold; et_force_hot = !cold;
     const int L = et.L, E = et.E;
     if (step < 1) step = 1;
-    long nexp = 0, bad = 0; double bytes = 0;
+    const size_t ne = (size_t)m.cfg.hidden * m.cfg.dim;
+    float *fx = cold ? xalloc(ne, sizeof(float)) : NULL;
+    uint8_t *ref = cold ? xalloc(qbytes(et.cold_type, ne), 1) : NULL;
+    long nchecked = 0, bad = 0; double bytes = 0;
     const double t0 = now_sec();
     for (int l = 0; l < L; l++) {
         for (int e = l % step; e < E; e += step) {
+            if (cold && !et.bx[l * E + e].cpos) continue;   /* este especialista nao tem copia fria: nada a conferir */
             pthread_mutex_lock(&et.mu);
             et.serial++;
             const int s = etb_request(&m, l, e);
@@ -844,18 +972,29 @@ static int etb_check(const char *model, int step, int scattered) {
             const Mat *ms[3] = { &m.layers[l].eg[e], &m.layers[l].eu[e], &m.layers[l].ed[e] };
             for (int r = 0; r < 3; r++) {
                 const uint8_t *q = et_slot_data(s, r);
-                bytes += (double)len[r];
-                if ((((uintptr_t)q ^ (uintptr_t)ms[r]->q) & 63) || memcmp(q, ms[r]->q, len[r])) {
-                    if (bad++ < 10) fprintf(stderr, "\nDIFERENTE: camada %d especialista %d matriz %d\n", l, e, r);
+                if (!cold) {
+                    bytes += (double)len[r];
+                    if ((((uintptr_t)q ^ (uintptr_t)ms[r]->q) & 63) || memcmp(q, ms[r]->q, len[r])) {
+                        if (bad++ < 10) fprintf(stderr, "\nDIFERENTE: camada %d especialista %d matriz %d\n", l, e, r);
+                    }
+                } else {    /* requantiza agora, a partir do GGUF mapeado: verdade independente do que foi gravado no pacote */
+                    dequant(ms[r]->type, ms[r]->q, fx, ne);
+                    enc_block(et.cold_type, fx, ref, ne);
+                    const size_t clen = qbytes(et.cold_type, ne);
+                    bytes += (double)clen;
+                    if (memcmp(q, ref, clen)) { if (bad++ < 10) fprintf(stderr, "\nDIFERENTE (fria): camada %d especialista %d matriz %d\n", l, e, r); }
                 }
             }
-            nexp++;
+            nchecked++;
         }
         fprintf(stderr, "\rcamada %d de %d", l + 1, L);
     }
-    printf("\n%s: %ld especialistas (%.2f GB) lidos pela arena e comparados com o GGUF mapeado em %.1f s: %s\n",
-           et.bx ? "pacote .exb" : "GGUF, 3 regioes", nexp, bytes / 1073741824.0, now_sec() - t0, bad ? "FALHOU" : "OK, identicos byte a byte");
+    free(fx); free(ref);
+    printf("\n%s%s: %ld especialistas (%.2f GB) lidos pela arena e comparados %s em %.1f s: %s\n",
+           et.bx ? "pacote .exb" : "GGUF, 3 regioes", cold ? ", copia fria" : "", nchecked, bytes / 1073741824.0,
+           cold ? "com a requantizacao recalculada agora" : "com o GGUF mapeado", now_sec() - t0, bad ? "FALHOU" : "OK, identicos byte a byte");
     if (bad) printf("%ld matrizes diferentes\n", bad);
+    et_force_cold = et_force_hot = 0;
     return bad ? 1 : 0;
 }
 static int etb_bench(const char *model, int rounds, int scattered) {
@@ -890,12 +1029,16 @@ static int etb_bench(const char *model, int rounds, int scattered) {
     return 0;
 }
 static int etb_main(int argc, char **argv) {
-    const int sc = argc > 3 && !strcmp(argv[argc - 1], "scattered");
-    const int na = argc - sc;
-    if (na >= 4 && !strcmp(argv[2], "check")) return etb_check(argv[3], na > 4 ? atoi(argv[4]) : 1, sc);
+    int sc = 0, cold = 0, na = argc;
+    while (na > 3 && (!strcmp(argv[na - 1], "scattered") || !strcmp(argv[na - 1], "cold"))) {
+        if (!strcmp(argv[na - 1], "scattered")) sc = 1; else cold = 1;
+        na--;
+    }
+    if (na >= 4 && !strcmp(argv[2], "check")) return etb_check(argv[3], na > 4 ? atoi(argv[4]) : 1, sc, cold);
     if (na >= 4 && !strcmp(argv[2], "bench")) return etb_bench(argv[3], na > 4 ? atoi(argv[4]) : 300, sc);
     if (argc == 3) return etb_write(argv[2]);
-    fprintf(stderr, "katana bundle <modelo.gguf> | check <modelo.gguf> [passo] [scattered] | bench <modelo.gguf> [rodadas] [scattered]\n");
+    fprintf(stderr, "katana bundle <modelo.gguf> | check <modelo.gguf> [passo] [scattered] [cold] | bench <modelo.gguf> [rodadas] [scattered]\n"
+                    "  KATANA_BUNDLE_COLD=0 desliga a copia fria ao gravar o pacote (padrao: Q2_K quando a original tiver mais bits)\n");
     return 1;
 }
 
