@@ -86,6 +86,71 @@ static int qtest_known(void) {
     return bad;
 }
 
+#if HAVE_VNNI
+/* ativacao de 8 bits (escala por bloco de 256) + VNNI de 512 bits + 8 linhas por passo (roadmap 3, itens
+   1-3): dot_q4k_v8/v8w/r8 e dot_q6k_v8/v8w/r8 contra uma referencia independente (mat_row desquantiza, a
+   soma e feita aqui em double) -- nao usa dot_row nem cpu_exact, para nao validar contra a propria conta
+   que os kernels fazem. Ao contrario do caminho de 16 bits (par qh/ql, exato), este troca precisao por
+   menos instrucoes vpdpbusd: o teto de erro aqui e so para pegar bug grosseiro. */
+static int qtest_act8(void) {
+    if (!cpu_vnni) { printf("ativacao 8 bits / VNNI largo: esta CPU nao tem AVX-512 VNNI, pulado\n"); return 0; }
+    printf("ativacao 8 bits (escala por bloco de 256) e VNNI de 512 bits: AVX-512 largo %s nesta CPU\n",
+           cpu_vnni512 ? "disponivel" : "indisponivel");
+    const int rows = 16, cols = 2048;
+    int bad = 0;
+    srand(99);
+    for (int ty = 0; ty < 2; ty++) {
+        const uint32_t t = ty ? T_Q6_K : T_Q4_K;
+        const int unit = qunit(t);
+        const size_t ub = qbytes(t, unit), stride = qbytes(t, cols);
+        uint8_t *buf = xalloc((size_t)rows * stride, 1);
+        for (size_t i = 0; i < (size_t)rows * stride; i++) buf[i] = (uint8_t)(rand() >> 7);
+        for (size_t blk = 0; blk < (size_t)rows * stride / ub; blk++) {
+            uint8_t *p = buf + blk * ub;
+            const uint16_t h0 = (uint16_t)(0x1C00 + rand() % 0x400), h1 = (uint16_t)(0x1C00 + rand() % 0x400);
+            if (t == T_Q4_K) { memcpy(p, &h0, 2); memcpy(p + 2, &h1, 2); } else memcpy(p + 208, &h0, 2);
+        }
+        Mat W; memset(&W, 0, sizeof W);
+        W.q = buf; W.type = t; W.stride = stride;
+        float *x = xalloc(cols, sizeof(float)), *row = xalloc(cols, sizeof(float));
+        for (int j = 0; j < cols; j++) x[j] = (float)rand() / RAND_MAX * 2.0f - 1.0f;
+        xq_tls = &xq0; xq_prepare(x, cols); xq_tls = NULL;
+        double e8 = 0, e8w = 0, e8r = 0, e8_vs_w = 0;
+        for (int r0 = 0; r0 + 8 <= rows; r0 += 8) {
+            float out8[8];
+            if (t == T_Q4_K) dot_q4k_r8(buf + (size_t)r0 * stride, stride, cols, out8);
+            else dot_q6k_r8(buf + (size_t)r0 * stride, stride, cols, out8);
+            for (int i = 0; i < 8; i++) {
+                const int r = r0 + i;
+                const uint8_t *rp = buf + (size_t)r * stride;
+                mat_row(row, &W, r, cols);
+                double ref = 0, mag = 0;
+                for (int j = 0; j < cols; j++) { ref += (double)row[j] * x[j]; mag += fabs((double)row[j] * x[j]); }
+                const float v8 = t == T_Q4_K ? dot_q4k_v8(rp, cols) : dot_q6k_v8(rp, cols);
+                double e = fabs((double)v8 - ref) / (mag + 1e-30);
+                if (e > e8) e8 = e;
+                if (cpu_vnni512) {
+                    const float v8w = t == T_Q4_K ? dot_q4k_v8w(rp, cols) : dot_q6k_v8w(rp, cols);
+                    e = fabs((double)v8w - ref) / (mag + 1e-30);
+                    if (e > e8w) e8w = e;
+                    e = fabs((double)v8w - (double)v8) / (fabs((double)v8) + 1e-20);
+                    if (e > e8_vs_w) e8_vs_w = e;
+                }
+                e = fabs((double)out8[i] - ref) / (mag + 1e-30);
+                if (e > e8r) e8r = e;
+            }
+        }
+        printf("%s: v8(256 bits) x referencia %.2e | r8(8 linhas) x referencia %.2e", ty ? "Q6_K" : "Q4_K", e8, e8r);
+        if (cpu_vnni512) printf(" | v8w(512 bits) x referencia %.2e | v8w x v8 (mesma conta inteira) %.2e", e8w, e8_vs_w);
+        printf("\n");
+        if (e8 > 0.05 || e8r > 0.05 || (cpu_vnni512 && (e8w > 0.05 || e8_vs_w > 1e-5))) bad = 1;
+        free(buf); free(x); free(row);
+    }
+    printf("ativacao 8 bits / VNNI largo: %s\n", bad ? "FALHOU" : "OK");
+    return bad;
+}
+#endif
+
 static int qtest(void) {
     static const struct { uint32_t t; const char *nome; int f16[2]; } TT[] = {
         { T_Q4_0, "Q4_0", { 0, -1 } }, { T_Q4_1, "Q4_1", { 0, 2 } }, { T_Q5_0, "Q5_0", { 0, -1 } }, { T_Q5_1, "Q5_1", { 0, 2 } },
@@ -164,6 +229,9 @@ static int qtest(void) {
         if (!ok) fails++;
         free(buf);      /* o buffer da GPU fica ate o fim do processo */
     }
+#if HAVE_VNNI
+    if (qtest_act8()) fails++;
+#endif
     printf("qtest: %s\n", fails ? "FALHOU" : "OK");
     free(x); free(row); free(og);
     return fails ? 1 : 0;

@@ -80,9 +80,9 @@ is in what fits in cache (small experts, batches).
 
 | Technique | What it does | Gain | Effort |
 |---|---|---|---|
-| 8-bit activations with scale per block of 256 and partial sums | twice the elements per instruction; the minimum term (Q4_K) and the offset (Q6_K) come out of the partial sums. Our old 8-bit test used one scale for the whole vector and changed the token; with a scale per block it needs to be redone | estimate 1.5–2x on what fits in cache | medium |
-| 8 rows in parallel per step | one load of the activation multiplies 8 rows; 8 independent accumulators | estimate 10–30% in cache | medium |
-| AVX-512 VNNI (`vpdpbusd`) with run-time selection | fuses three instructions and doubles the width | estimate up to 2x in cache | medium |
+| 8-bit activations with scale per block of 256 and partial sums | twice the elements per instruction; the minimum term (Q4_K) and the offset (Q6_K) come out of the partial sums. Our old 8-bit test used one scale for the whole vector and changed the token; with a scale per block it needs to be redone | implemented and validated numerically 2026-11-28 (3.3), not measured | done (not wired into the live MoE path yet, see 3.3) |
+| 8 rows in parallel per step | one load of the activation multiplies 8 rows; 8 independent accumulators | implemented and validated numerically 2026-11-28 (3.3), not measured | done (not wired into the live MoE path yet, see 3.3) |
+| AVX-512 VNNI (`vpdpbusd`) with run-time selection | fuses three instructions and doubles the width | implemented and validated numerically 2026-11-28 (3.3): on this machine (AVX-512 VNNI available) the 512-bit kernel is bit-identical to the 256-bit one, not measured for speed | done (not wired into the live MoE path yet, see 3.3) |
 | Threads = physical cores, pinned, without Windows power throttling | less contention and less variation | measured: 8 threads are ~20% slower than 12 on this engine (with or without pinning); turning off power throttling changed nothing | done |
 | Different number of threads for generation and for batch | generation is memory-limited; batch is compute-limited | to measure | small |
 | Vectorized `exp` for SiLU and softmax | degree-5 polynomial | small | small |
@@ -147,6 +147,68 @@ the new path against all switches off through `moe_cpu_multi` (1 token and a gro
 counts 1..9 at unaligned starts, and `silu_mul_v`. Result: relative difference of the outputs 6e-7 to 8e-6 (the
 SiLU polynomial plus summation order), `silu_mul_v` 3e-7. `MOEB_CHECK=1 moebench <model.gguf>` does the same on
 real expert tensors (written, not run). `katana lbtest` still passes.
+
+### 3.3 8-bit activations, AVX-512 VNNI (512-bit) and 8 rows per step (`src/engine/cpu_kernels.c`, implemented 2026-11-28, NOT measured)
+
+Builds on top of the existing VNNI path (`dot_q4k_v`/`dot_q6k_v`/`dot_q4k_v4`/`dot_q6k_v4`, which already used
+`vpdpbusd` at 256-bit width with an EXACT 16-bit activation split into two signed 8-bit halves, `qh`/`ql`, two
+`vpdpbusd` per 32-weight group — no precision loss, just two 8-bit instructions standing in for widen+madd).
+The three items below are a genuine speed-for-precision trade, scoped to this cache-resident product path only
+(not wired into the general CPU dense/attention path, see "Not done" below):
+
+- **8-bit activations, scale per block of 256 (item 1).** `xq_prepare` already computed `qh = round(q/256)`
+  as an exact half of the 16-bit activation; used *by itself* (without `ql`) it is already an 8-bit
+  quantization of the activation with scale `xs*256` (per 256-column block, same granularity as the existing
+  16-bit path — not a single whole-vector scale, which is what made the old 8-bit attempt change the chosen
+  token, per `docs/knowledge.md` section 4). New partial sums `bs32_h`/`bs16_h` (sum of `qh` per 32/16, mirroring
+  the existing `bs32`/`bs16`) feed the Q4_K minimum term and the Q6_K offset term. New kernels `dot_q4k_v8`/
+  `dot_q6k_v8`: one `vpdpbusd` per 32-weight group instead of two (twice the elements per instruction, as the
+  roadmap estimated). `KATANA_ACT8=0` would disable it once wired in (see below); the flag and the runtime
+  detection (`act8_opt`) exist now.
+- **AVX-512 VNNI at 512-bit width (item 3).** `dot_q4k_v8w`/`dot_q6k_v8w`: the same 8-bit activation, but the
+  two 256-bit `vpdpbusd` calls of `dot_q4k_v8`/`dot_q6k_v8` (lo+hi for Q4_K, two 32-weight sub-groups for Q6_K)
+  become a single 512-bit `vpdpbusd` (`_mm512_dpbusd_epi32`, `__m512i`/zmm) — doubling the width on top of item
+  1. Detected at runtime (`cpu_vnni512`, `__builtin_cpu_supports("avx512f")`, `KATANA_VNNI512=0` disables it);
+  this machine has AVX-512 VNNI (`avx512_vnni` in `/proc/cpuinfo`), so it was actually exercised, not just
+  compiled: `v8w` is bit-identical to `v8` on every row tested (max difference 0.00e+00), confirming the
+  512-bit regrouping does not change the integer arithmetic.
+- **8 rows per step with the 8-bit activation (item 2).** `dot_q4k_r8`/`dot_q6k_r8`: like the existing
+  `dot_q4k_v4`/`dot_q6k_v4` (4 rows, 16-bit exact) but 8 rows and 8 independent accumulators, built on the
+  8-bit activation of item 1 so the shared activation load is a single `vpdpbusd` per row per group instead
+  of two. `KATANA_MOE_ROWS8=0` would disable it once wired in.
+
+**Validation (`katana qtest`, new `qtest_act8`).** Independent reference: `mat_row` (dequantizes the real
+Q4_K/Q6_K block layout) dotted against the activation in double precision — the same pattern `qtest` already
+uses for every other type, not derived from `dot_row`/`xq_prepare`/`cpu_exact`. Random Q4_K and Q6_K rows,
+2048 columns:
+
+| kernel | relative error vs double-precision reference |
+|---|---|
+| `dot_q4k_v8` (256-bit, 1 row) | 2.53e-4 |
+| `dot_q4k_r8` (256-bit, 8 rows) | 2.53e-4 |
+| `dot_q4k_v8w` (512-bit, 1 row) | 2.53e-4 (0.00e+00 vs `dot_q4k_v8`) |
+| `dot_q6k_v8` (256-bit, 1 row) | 3.18e-4 |
+| `dot_q6k_r8` (256-bit, 8 rows) | 3.18e-4 |
+| `dot_q6k_v8w` (512-bit, 1 row) | 3.18e-4 (0.00e+00 vs `dot_q6k_v8`) |
+
+This is ~25-30x worse than the existing exact 16-bit path (~1e-5) — expected, since 8 bits per element is a
+real loss of resolution versus the lossless `qh`/`ql` split, even with a scale per block of 256 instead of
+one for the whole vector. It is far better than the old whole-vector 8-bit attempt (which flipped the chosen
+token); whether 2.5-3e-4 per dot product is safe to use token after token, 40+ layers deep, on the real model
+is unmeasured and untested on Qwen3.6 generation (not just `qtest`/`moebench` synthetic blocks).
+`MOEB_SYNTH=1 tools/moebench/moebench x` (section 3.2's check) still passes unchanged: nothing above touches
+`moe_cpu_multi`, `moe_rows`, `dot_q4k_v4`/`dot_q6k_v4` or `silu_mul_v`.
+
+**Not done — wiring into the live MoE path.** The three kernels above are new building blocks with the same
+signature shape as `dot_q4k_v4`/`dot_q6k_v4` (`dot_q4k_r8`/`dot_q6k_r8`) or as `dot_q4k_v`/`dot_q6k_v`
+(`dot_q4k_v8`/`dot_q4k_v8w`), ready to be selected from `moe_rows` in `src/engine/vk_dense.c` (which currently
+calls `dot_q4k_v4`/`dot_q6k_v4` under `KATANA_MOE_ROWS`) and from `dot_row` in this file (which calls
+`dot_q4k_v`/`dot_q6k_v`). Neither call site was touched in this session: `vk_dense.c` and `qwen35.c`'s `g4_*`
+functions were locked for a concurrent session working on the Gemma 4 GPU path at the same time. Wiring them in
+is a small change (a size check plus the three env switches, `KATANA_ACT8`/`KATANA_VNNI512`/`KATANA_MOE_ROWS8`,
+following the `KATANA_MOE_ROWS`/`moe_opt_rows` pattern) but needs: (a) deciding whether the 8-bit activation's
+~3e-4 error is acceptable for the MoE expert path specifically (not the general dense/attention path, where no
+change was made), and (b) `vk_dense.c` being free to edit again.
 
 ## 4. Expert cache (MoE)
 

@@ -319,9 +319,17 @@ static float dot_q6k(const uint8_t *row, const float *x, int cols) {
  * vira float para receber a escala. Com 16 bits o erro de quantizacao das ativacoes fica
  * na casa de 1e-5 (com 8 bits, medido, chegava a trocar o token escolhido).
  * cpu_exact=1 volta aos produtos em float (referencia exata, usada pelo selftest). */
-typedef struct { int16_t *q; int32_t *bs32; float *xs; int cap; int8_t *qh, *ql; int32_t *bs16; } XQ;
-/* bs32: soma de cada 32 valores; qh/ql: q = qh*256 + ql em 8 bits e bs16: soma de cada 16 (so com VNNI) */
+typedef struct { int16_t *q; int32_t *bs32; float *xs; int cap; int8_t *qh, *ql; int32_t *bs16;
+                 int32_t *bs32_h, *bs16_h; } XQ;
+/* bs32: soma de cada 32 valores; qh/ql: q = qh*256 + ql em 8 bits e bs16: soma de cada 16 (so com VNNI)
+   bs32_h/bs16_h: soma de cada 32/16 valores de qh sozinho (ativacao de 8 bits, escala xs*256; secao 3
+   do roadmap, "8-bit activations with scale per block of 256") */
 static int cpu_vnni;
+/* ativacao de 8 bits (escala por bloco de 256, roadmap 3 item 1) e VNNI de 512 bits (item 3): flags lidas
+   em vnni_init, usadas pelos kernels dot_*_v8/dot_*_v8w/dot_*_r8 mais abaixo */
+static int act8_opt = -1, cpu_vnni512;
+static int act8_env_on(void) { const char *v = getenv("KATANA_ACT8"); return !(v && atoi(v) == 0); }
+static int vnni512_env_on(void) { const char *v = getenv("KATANA_VNNI512"); return !(v && atoi(v) == 0); }
 /* a entrada quantizada em uso: a global, ou outra escolhida por thread (xq_tls) quando varios
    produtos com entradas diferentes rodam no mesmo despacho do pool (especialistas do MoE) */
 static XQ xq0;
@@ -343,8 +351,11 @@ static float *dbg_x; static int *dbg_sel, dbg_pos, dbg_on;   /* medida (KATANA_Q
 static void xq_prepare(const float *x, int cols) {
     if (cols > xq.cap) {
         free(xq.q); free(xq.bs32); free(xq.xs); free(xq.qh); free(xq.ql); free(xq.bs16);
+        free(xq.bs32_h); free(xq.bs16_h);
         xq.qh = xalloc((size_t)cols + 64, 1); xq.ql = xalloc((size_t)cols + 64, 1);
         xq.bs16 = xalloc((size_t)cols / 16 + 16, sizeof(int32_t));
+        xq.bs32_h = xalloc((size_t)cols / 32 + 16, sizeof(int32_t));
+        xq.bs16_h = xalloc((size_t)cols / 16 + 16, sizeof(int32_t));
         xq.q = xalloc((size_t)cols + 64, sizeof(int16_t));
         xq.bs32 = xalloc((size_t)cols / 32 + 16, sizeof(int32_t));
         xq.xs = xalloc((size_t)cols / 256 + 1, sizeof(float));
@@ -365,6 +376,7 @@ static void xq_prepare(const float *x, int cols) {
         if (amax == 0.0f) {
             memset(q, 0, 256 * sizeof(int16_t)); memset(xq.bs32 + b * 8, 0, 8 * sizeof(int32_t)); xq.xs[b] = 0.0f;
             memset(xq.qh + b * 256, 0, 256); memset(xq.ql + b * 256, 0, 256); memset(xq.bs16 + b * 16, 0, 16 * sizeof(int32_t));
+            memset(xq.bs32_h + b * 8, 0, 8 * sizeof(int32_t)); memset(xq.bs16_h + b * 16, 0, 16 * sizeof(int32_t));
             continue;
         }
         const __m256 is = _mm256_set1_ps(32512.0f / amax);
@@ -394,6 +406,14 @@ static void xq_prepare(const float *x, int cols) {
                 const __m256i s2 = _mm256_hadd_epi32(sh, sh);
                 xq.bs16[b * 16 + sub * 2] = _mm256_extract_epi32(s2, 0) + _mm256_extract_epi32(s2, 4);
                 xq.bs16[b * 16 + sub * 2 + 1] = _mm256_extract_epi32(s2, 1) + _mm256_extract_epi32(s2, 5);
+                /* mesma soma, mas de ha/hb (qh sozinho = ativacao de 8 bits, escala xs*256) */
+                const __m256i shh = _mm256_hadd_epi32(_mm256_madd_epi16(ha, ones), _mm256_madd_epi16(hb, ones));
+                const __m256i s2h = _mm256_hadd_epi32(shh, shh);
+                const int32_t h0 = _mm256_extract_epi32(s2h, 0) + _mm256_extract_epi32(s2h, 4);
+                const int32_t h1 = _mm256_extract_epi32(s2h, 1) + _mm256_extract_epi32(s2h, 5);
+                xq.bs16_h[b * 16 + sub * 2] = h0;
+                xq.bs16_h[b * 16 + sub * 2 + 1] = h1;
+                xq.bs32_h[b * 8 + sub] = h0 + h1;
             }
         }
         xq.xs[b] = amax / 32512.0f;
@@ -625,6 +645,8 @@ static void vnni_init(void) {
     __builtin_cpu_init();
     cpu_vnni = __builtin_cpu_supports("avx512vnni") && __builtin_cpu_supports("avx512vl") &&
                __builtin_cpu_supports("avx512bw") && !(getenv("KATANA_VNNI") && atoi(getenv("KATANA_VNNI")) == 0);
+    act8_opt = act8_env_on();
+    cpu_vnni512 = cpu_vnni && __builtin_cpu_supports("avx512f") && vnni512_env_on();
 }
 
 /* Q4_K: escalas e minimos como em dot_q4k_i; o termo dos minimos usa bs32 */
@@ -858,6 +880,253 @@ VNNI_T static float dot_q5k_v(const uint8_t *row, int cols) {
         }
     }
     return hsum256(acc) - hsum256(accm);
+}
+
+/* ---------- ativacao de 8 bits, escala por bloco de 256 (roadmap 3, item 1) ----------
+   qh (acima) ja e round(q/256): um q de 16 bits (escala xs por bloco de 256) partido em dois de 8 bits
+   (qh*256+ql) sem perda. Usando SO qh como ativacao (escala xs*256) perdemos os ~8 bits baixos de q, mas
+   cada grupo de 32 pesos vira 1 vpdpbusd em vez de 2 (dobra os elementos por grupo de instrucao); o termo
+   dos minimos (Q4_K) e o deslocamento (Q6_K) saem de bs32_h/bs16_h (soma de qh, nao de q). Isto É uma perda
+   real de precisao (diferente do par qh/ql, que e exato); validado numericamente contra o produto em dobro
+   (mat_row + double) no qtest/moebench. KATANA_ACT8=0 desliga (so volta ao caminho de cima). */
+
+VNNI_T static float dot_q4k_v8(const uint8_t *row, int cols) {
+    const __m256i m4 = _mm256_set1_epi8(0x0F), zero = _mm256_setzero_si256();
+    const uint32_t k1 = 0x3f3f3f3fu, k2 = 0x0f0f0f0fu, k3 = 0x03030303u;
+    const int8_t *xh = xq.qh;
+    const int32_t *bs = xq.bs32_h;
+    __m256 acc = _mm256_setzero_ps(), accm = _mm256_setzero_ps();
+    for (int b = 0; b < cols / 256; b++, row += 144, xh += 256, bs += 8) {
+        uint16_t h0, h1; uint32_t u[4];
+        memcpy(&h0, row, 2); memcpy(&h1, row + 2, 2); memcpy(u, row + 4, 12);
+        u[3] = ((u[2] >> 4) & k2) | (((u[1] >> 6) & k3) << 4);
+        const uint32_t aux = u[1] & k1;
+        u[1] = (u[2] & k2) | (((u[0] >> 6) & k3) << 4);
+        u[2] = aux;
+        u[0] &= k1;
+        const float xs8 = xq.xs[b] * 256.0f;
+        const float d = _mm_cvtss_f32(_mm_cvtph_ps(_mm_cvtsi32_si128(h0))) * xs8;
+        const float dmin = _mm_cvtss_f32(_mm_cvtph_ps(_mm_cvtsi32_si128(h1))) * xs8;
+        const __m256i sc32 = _mm256_cvtepu8_epi32(_mm_loadl_epi64((const __m128i *)u));
+        const __m256i mn32 = _mm256_cvtepu8_epi32(_mm_loadl_epi64((const __m128i *)(u + 2)));
+        const __m256 scf = _mm256_mul_ps(_mm256_cvtepi32_ps(sc32), _mm256_set1_ps(d));
+        accm = _mm256_fmadd_ps(_mm256_cvtepi32_ps(_mm256_mullo_epi32(mn32, _mm256_loadu_si256((const __m256i *)bs))),
+                               _mm256_set1_ps(dmin), accm);
+        const uint8_t *q = row + 16;
+        for (int j = 0; j < 4; j++) {
+            const __m256i v = _mm256_loadu_si256((const __m256i *)(q + 32 * j));
+            const __m256i lo = _mm256_and_si256(v, m4), hi = _mm256_and_si256(_mm256_srli_epi16(v, 4), m4);
+            const __m256i pl = _mm256_dpbusd_epi32(zero, lo, _mm256_loadu_si256((const __m256i *)(xh + 64 * j)));
+            acc = _mm256_fmadd_ps(_mm256_cvtepi32_ps(pl), _mm256_permutevar8x32_ps(scf, _mm256_set1_epi32(2 * j)), acc);
+            const __m256i ph = _mm256_dpbusd_epi32(zero, hi, _mm256_loadu_si256((const __m256i *)(xh + 64 * j + 32)));
+            acc = _mm256_fmadd_ps(_mm256_cvtepi32_ps(ph), _mm256_permutevar8x32_ps(scf, _mm256_set1_epi32(2 * j + 1)), acc);
+        }
+    }
+    return hsum256(acc) - hsum256(accm);
+}
+
+VNNI_T static float dot_q6k_v8(const uint8_t *row, int cols) {
+    const __m256i m4 = _mm256_set1_epi8(0x0F), m2 = _mm256_set1_epi8(3), zero = _mm256_setzero_si256();
+    const int8_t *xh = xq.qh;
+    const int32_t *bs = xq.bs16_h;
+    __m256 acc = _mm256_setzero_ps();
+    for (int b = 0; b < cols / 256; b++, row += 210, xh += 256, bs += 16) {
+        const uint8_t *ql = row, *qh = row + 128;
+        const int8_t *sc = (const int8_t *)(row + 192);
+        uint16_t h; memcpy(&h, row + 208, 2);
+        const float dv = _mm_cvtss_f32(_mm_cvtph_ps(_mm_cvtsi32_si128(h))) * xq.xs[b] * 256.0f;
+        for (int c = 0; c < 2; c++, ql += 64, qh += 32, sc += 8) {
+            const __m256i l0 = _mm256_loadu_si256((const __m256i *)ql);
+            const __m256i l1 = _mm256_loadu_si256((const __m256i *)(ql + 32));
+            const __m256i hv = _mm256_loadu_si256((const __m256i *)qh);
+            __m256i q[4];
+            q[0] = _mm256_or_si256(_mm256_and_si256(l0, m4), _mm256_slli_epi16(_mm256_and_si256(hv, m2), 4));
+            q[1] = _mm256_or_si256(_mm256_and_si256(l1, m4), _mm256_slli_epi16(_mm256_and_si256(_mm256_srli_epi16(hv, 2), m2), 4));
+            q[2] = _mm256_or_si256(_mm256_and_si256(_mm256_srli_epi16(l0, 4), m4), _mm256_slli_epi16(_mm256_and_si256(_mm256_srli_epi16(hv, 4), m2), 4));
+            q[3] = _mm256_or_si256(_mm256_and_si256(_mm256_srli_epi16(l1, 4), m4), _mm256_slli_epi16(_mm256_and_si256(_mm256_srli_epi16(hv, 6), m2), 4));
+            for (int k = 0; k < 4; k++) {
+                const int o = c * 128 + k * 32;
+                const __m256i p = _mm256_dpbusd_epi32(zero, q[k], _mm256_loadu_si256((const __m256i *)(xh + o)));
+                const __m256i corr = _mm256_set_epi32(0, 0, 0, 32 * bs[c * 8 + 2 * k + 1], 0, 0, 0, 32 * bs[c * 8 + 2 * k]);
+                const __m256 scv = _mm256_insertf128_ps(_mm256_castps128_ps256(_mm_set1_ps(dv * sc[2 * k])),
+                                                        _mm_set1_ps(dv * sc[2 * k + 1]), 1);
+                acc = _mm256_fmadd_ps(_mm256_cvtepi32_ps(_mm256_sub_epi32(p, corr)), scv, acc);
+            }
+        }
+    }
+    return hsum256(acc);
+}
+
+/* ---------- AVX-512 largo (roadmap 3, item 3): o mesmo produto de 8 bits acima, mas lo+hi (Q4_K) ou
+   duas faixas de 32 (Q6_K) viram um unico vpdpbusd de 512 bits (64 bytes) em vez de dois de 256: dobra a
+   largura por cima do item 1 (que ja tinha dobrado os elementos por instrucao trocando o par qh/ql por so
+   qh). So roda se a CPU tiver AVX-512 (mesmo alvo de funcao do VNNI_T, que ja exige avx512f); selecao em
+   tempo de execucao por cpu_vnni512 (KATANA_VNNI512=0 desliga, cai no dot_q4k_v8/dot_q6k_v8 de 256 bits). */
+VNNI_T static float dot_q4k_v8w(const uint8_t *row, int cols) {
+    const __m256i m4 = _mm256_set1_epi8(0x0F);
+    const uint32_t k1 = 0x3f3f3f3fu, k2 = 0x0f0f0f0fu, k3 = 0x03030303u;
+    const int8_t *xh = xq.qh;
+    const int32_t *bs = xq.bs32_h;
+    __m256 acc = _mm256_setzero_ps(), accm = _mm256_setzero_ps();
+    for (int b = 0; b < cols / 256; b++, row += 144, xh += 256, bs += 8) {
+        uint16_t h0, h1; uint32_t u[4];
+        memcpy(&h0, row, 2); memcpy(&h1, row + 2, 2); memcpy(u, row + 4, 12);
+        u[3] = ((u[2] >> 4) & k2) | (((u[1] >> 6) & k3) << 4);
+        const uint32_t aux = u[1] & k1;
+        u[1] = (u[2] & k2) | (((u[0] >> 6) & k3) << 4);
+        u[2] = aux;
+        u[0] &= k1;
+        const float xs8 = xq.xs[b] * 256.0f;
+        const float d = _mm_cvtss_f32(_mm_cvtph_ps(_mm_cvtsi32_si128(h0))) * xs8;
+        const float dmin = _mm_cvtss_f32(_mm_cvtph_ps(_mm_cvtsi32_si128(h1))) * xs8;
+        const __m256i sc32 = _mm256_cvtepu8_epi32(_mm_loadl_epi64((const __m128i *)u));
+        const __m256i mn32 = _mm256_cvtepu8_epi32(_mm_loadl_epi64((const __m128i *)(u + 2)));
+        const __m256 scf = _mm256_mul_ps(_mm256_cvtepi32_ps(sc32), _mm256_set1_ps(d));
+        accm = _mm256_fmadd_ps(_mm256_cvtepi32_ps(_mm256_mullo_epi32(mn32, _mm256_loadu_si256((const __m256i *)bs))),
+                               _mm256_set1_ps(dmin), accm);
+        const uint8_t *q = row + 16;
+        for (int j = 0; j < 4; j++) {
+            const __m256i v = _mm256_loadu_si256((const __m256i *)(q + 32 * j));
+            const __m256i lo = _mm256_and_si256(v, m4), hi = _mm256_and_si256(_mm256_srli_epi16(v, 4), m4);
+            const __m512i w = _mm512_inserti64x4(_mm512_castsi256_si512(lo), hi, 1);
+            const __m512i a = _mm512_loadu_si512((const void *)(xh + 64 * j));
+            const __m512i p = _mm512_dpbusd_epi32(_mm512_setzero_si512(), w, a);
+            acc = _mm256_fmadd_ps(_mm256_cvtepi32_ps(_mm512_castsi512_si256(p)), _mm256_permutevar8x32_ps(scf, _mm256_set1_epi32(2 * j)), acc);
+            acc = _mm256_fmadd_ps(_mm256_cvtepi32_ps(_mm512_extracti64x4_epi64(p, 1)), _mm256_permutevar8x32_ps(scf, _mm256_set1_epi32(2 * j + 1)), acc);
+        }
+    }
+    return hsum256(acc) - hsum256(accm);
+}
+
+VNNI_T static float dot_q6k_v8w(const uint8_t *row, int cols) {
+    const __m256i m4 = _mm256_set1_epi8(0x0F), m2 = _mm256_set1_epi8(3);
+    const int8_t *xh = xq.qh;
+    const int32_t *bs = xq.bs16_h;
+    __m256 acc = _mm256_setzero_ps();
+    for (int b = 0; b < cols / 256; b++, row += 210, xh += 256, bs += 16) {
+        const uint8_t *ql = row, *qh = row + 128;
+        const int8_t *sc = (const int8_t *)(row + 192);
+        uint16_t h; memcpy(&h, row + 208, 2);
+        const float dv = _mm_cvtss_f32(_mm_cvtph_ps(_mm_cvtsi32_si128(h))) * xq.xs[b] * 256.0f;
+        for (int c = 0; c < 2; c++, ql += 64, qh += 32, sc += 8) {
+            const __m256i l0 = _mm256_loadu_si256((const __m256i *)ql);
+            const __m256i l1 = _mm256_loadu_si256((const __m256i *)(ql + 32));
+            const __m256i hv = _mm256_loadu_si256((const __m256i *)qh);
+            __m256i q[4];
+            q[0] = _mm256_or_si256(_mm256_and_si256(l0, m4), _mm256_slli_epi16(_mm256_and_si256(hv, m2), 4));
+            q[1] = _mm256_or_si256(_mm256_and_si256(l1, m4), _mm256_slli_epi16(_mm256_and_si256(_mm256_srli_epi16(hv, 2), m2), 4));
+            q[2] = _mm256_or_si256(_mm256_and_si256(_mm256_srli_epi16(l0, 4), m4), _mm256_slli_epi16(_mm256_and_si256(_mm256_srli_epi16(hv, 4), m2), 4));
+            q[3] = _mm256_or_si256(_mm256_and_si256(_mm256_srli_epi16(l1, 4), m4), _mm256_slli_epi16(_mm256_and_si256(_mm256_srli_epi16(hv, 6), m2), 4));
+            for (int kk = 0; kk < 2; kk++) {
+                const int k = kk * 2;
+                const __m512i w = _mm512_inserti64x4(_mm512_castsi256_si512(q[k]), q[k + 1], 1);
+                const __m512i a = _mm512_loadu_si512((const void *)(xh + c * 128 + k * 32));
+                const __m512i p = _mm512_dpbusd_epi32(_mm512_setzero_si512(), w, a);
+                const __m256i p0 = _mm512_castsi512_si256(p), p1 = _mm512_extracti64x4_epi64(p, 1);
+                const __m256i corr0 = _mm256_set_epi32(0, 0, 0, 32 * bs[c * 8 + 2 * k + 1], 0, 0, 0, 32 * bs[c * 8 + 2 * k]);
+                const __m256i corr1 = _mm256_set_epi32(0, 0, 0, 32 * bs[c * 8 + 2 * k + 3], 0, 0, 0, 32 * bs[c * 8 + 2 * k + 2]);
+                const __m256 scv0 = _mm256_insertf128_ps(_mm256_castps128_ps256(_mm_set1_ps(dv * sc[2 * k])),
+                                                         _mm_set1_ps(dv * sc[2 * k + 1]), 1);
+                const __m256 scv1 = _mm256_insertf128_ps(_mm256_castps128_ps256(_mm_set1_ps(dv * sc[2 * k + 2])),
+                                                         _mm_set1_ps(dv * sc[2 * k + 3]), 1);
+                acc = _mm256_fmadd_ps(_mm256_cvtepi32_ps(_mm256_sub_epi32(p0, corr0)), scv0, acc);
+                acc = _mm256_fmadd_ps(_mm256_cvtepi32_ps(_mm256_sub_epi32(p1, corr1)), scv1, acc);
+            }
+        }
+    }
+    return hsum256(acc);
+}
+
+/* ---------- 8 linhas por passo, ativacao de 8 bits (roadmap 3, item 2) ----------
+   Como dot_q4k_v4/dot_q6k_v4 (4 linhas), mas 8 linhas e 8 acumuladores independentes; usa a ativacao de 8
+   bits (qh sozinho, item 1) para que cada grupo de 32 pesos de CADA linha gaste so 1 vpdpbusd (a carga da
+   ativacao e compartilhada pelas 8 linhas). KATANA_MOE_ROWS8=0 desliga. Escreve out[0..7]. */
+VNNI_T static void dot_q4k_r8(const uint8_t *row0, size_t stride, int cols, float *out) {
+    const __m256i m4 = _mm256_set1_epi8(0x0F), zero = _mm256_setzero_si256();
+    const uint32_t k1 = 0x3f3f3f3fu, k2 = 0x0f0f0f0fu, k3 = 0x03030303u;
+    const int8_t *xh = xq.qh;
+    const int32_t *bs = xq.bs32_h;
+    __m256 acc[8], accm[8];
+    for (int r = 0; r < 8; r++) { acc[r] = _mm256_setzero_ps(); accm[r] = _mm256_setzero_ps(); }
+    const uint8_t *rw[8];
+    for (int r = 0; r < 8; r++) rw[r] = row0 + r * stride;
+    for (int b = 0; b < cols / 256; b++, xh += 256, bs += 8) {
+        __m256 scf[8];
+        const float xs8 = xq.xs[b] * 256.0f;
+        const __m256i bsv = _mm256_loadu_si256((const __m256i *)bs);
+        for (int r = 0; r < 8; r++) {
+            const uint8_t *row = rw[r] + (size_t)b * 144;
+            uint16_t h0, h1; uint32_t u[4];
+            memcpy(&h0, row, 2); memcpy(&h1, row + 2, 2); memcpy(u, row + 4, 12);
+            u[3] = ((u[2] >> 4) & k2) | (((u[1] >> 6) & k3) << 4);
+            const uint32_t aux = u[1] & k1;
+            u[1] = (u[2] & k2) | (((u[0] >> 6) & k3) << 4);
+            u[2] = aux;
+            u[0] &= k1;
+            const float d = _mm_cvtss_f32(_mm_cvtph_ps(_mm_cvtsi32_si128(h0))) * xs8;
+            const float dmin = _mm_cvtss_f32(_mm_cvtph_ps(_mm_cvtsi32_si128(h1))) * xs8;
+            const __m256i sc32 = _mm256_cvtepu8_epi32(_mm_loadl_epi64((const __m128i *)u));
+            const __m256i mn32 = _mm256_cvtepu8_epi32(_mm_loadl_epi64((const __m128i *)(u + 2)));
+            scf[r] = _mm256_mul_ps(_mm256_cvtepi32_ps(sc32), _mm256_set1_ps(d));
+            accm[r] = _mm256_fmadd_ps(_mm256_cvtepi32_ps(_mm256_mullo_epi32(mn32, bsv)), _mm256_set1_ps(dmin), accm[r]);
+        }
+        for (int j = 0; j < 4; j++) {
+            const __m256i xh0 = _mm256_loadu_si256((const __m256i *)(xh + 64 * j));
+            const __m256i xh1 = _mm256_loadu_si256((const __m256i *)(xh + 64 * j + 32));
+            const __m256i sj0 = _mm256_set1_epi32(2 * j), sj1 = _mm256_set1_epi32(2 * j + 1);
+            for (int r = 0; r < 8; r++) {
+                const __m256i v = _mm256_loadu_si256((const __m256i *)(rw[r] + (size_t)b * 144 + 16 + 32 * j));
+                const __m256i lo = _mm256_and_si256(v, m4), hi = _mm256_and_si256(_mm256_srli_epi16(v, 4), m4);
+                const __m256i pl = _mm256_dpbusd_epi32(zero, lo, xh0);
+                acc[r] = _mm256_fmadd_ps(_mm256_cvtepi32_ps(pl), _mm256_permutevar8x32_ps(scf[r], sj0), acc[r]);
+                const __m256i ph = _mm256_dpbusd_epi32(zero, hi, xh1);
+                acc[r] = _mm256_fmadd_ps(_mm256_cvtepi32_ps(ph), _mm256_permutevar8x32_ps(scf[r], sj1), acc[r]);
+            }
+        }
+    }
+    for (int r = 0; r < 8; r++) out[r] = hsum256(acc[r]) - hsum256(accm[r]);
+}
+
+VNNI_T static void dot_q6k_r8(const uint8_t *row0, size_t stride, int cols, float *out) {
+    const __m256i m4 = _mm256_set1_epi8(0x0F), m2 = _mm256_set1_epi8(3), zero = _mm256_setzero_si256();
+    const int8_t *xh = xq.qh;
+    const int32_t *bs = xq.bs16_h;
+    __m256 acc[8];
+    for (int r = 0; r < 8; r++) acc[r] = _mm256_setzero_ps();
+    const uint8_t *rw[8];
+    for (int r = 0; r < 8; r++) rw[r] = row0 + r * stride;
+    for (int b = 0; b < cols / 256; b++, xh += 256, bs += 16) {
+        float dv[8];
+        for (int r = 0; r < 8; r++) {
+            uint16_t h; memcpy(&h, rw[r] + (size_t)b * 210 + 208, 2);
+            dv[r] = _mm_cvtss_f32(_mm_cvtph_ps(_mm_cvtsi32_si128(h))) * xq.xs[b] * 256.0f;
+        }
+        for (int c = 0; c < 2; c++) {
+            __m256i xhv[4];
+            for (int k = 0; k < 4; k++) xhv[k] = _mm256_loadu_si256((const __m256i *)(xh + c * 128 + k * 32));
+            for (int r = 0; r < 8; r++) {
+                const uint8_t *row = rw[r] + (size_t)b * 210;
+                const uint8_t *ql = row + 64 * c, *qh = row + 128 + 32 * c;
+                const int8_t *sc = (const int8_t *)(row + 192) + 8 * c;
+                const __m256i l0 = _mm256_loadu_si256((const __m256i *)ql);
+                const __m256i l1 = _mm256_loadu_si256((const __m256i *)(ql + 32));
+                const __m256i hv = _mm256_loadu_si256((const __m256i *)qh);
+                __m256i q[4];
+                q[0] = _mm256_or_si256(_mm256_and_si256(l0, m4), _mm256_slli_epi16(_mm256_and_si256(hv, m2), 4));
+                q[1] = _mm256_or_si256(_mm256_and_si256(l1, m4), _mm256_slli_epi16(_mm256_and_si256(_mm256_srli_epi16(hv, 2), m2), 4));
+                q[2] = _mm256_or_si256(_mm256_and_si256(_mm256_srli_epi16(l0, 4), m4), _mm256_slli_epi16(_mm256_and_si256(_mm256_srli_epi16(hv, 4), m2), 4));
+                q[3] = _mm256_or_si256(_mm256_and_si256(_mm256_srli_epi16(l1, 4), m4), _mm256_slli_epi16(_mm256_and_si256(_mm256_srli_epi16(hv, 6), m2), 4));
+                for (int k = 0; k < 4; k++) {
+                    const __m256i p = _mm256_dpbusd_epi32(zero, q[k], xhv[k]);
+                    const __m256i corr = _mm256_set_epi32(0, 0, 0, 32 * bs[c * 8 + 2 * k + 1], 0, 0, 0, 32 * bs[c * 8 + 2 * k]);
+                    const __m256 scv = _mm256_insertf128_ps(_mm256_castps128_ps256(_mm_set1_ps(dv[r] * sc[2 * k])),
+                                                            _mm_set1_ps(dv[r] * sc[2 * k + 1]), 1);
+                    acc[r] = _mm256_fmadd_ps(_mm256_cvtepi32_ps(_mm256_sub_epi32(p, corr)), scv, acc[r]);
+                }
+            }
+        }
+    }
+    for (int r = 0; r < 8; r++) out[r] = hsum256(acc[r]);
 }
 #else
 #define HAVE_VNNI 0
