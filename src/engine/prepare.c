@@ -19,7 +19,7 @@ static void putenv_dup(const char *s) { putenv(strdup(s)); }   /* a string preci
 /* for_agent: nao mexe em KATANA_CTX (o agente usa um contexto maior para os resultados de ferramenta) */
 static void perfil_apply(const char *model_path, int for_agent) {
     char fn[1200], line[256], backend[32] = "";
-    long long origem = -1; int kv16 = -1, ctx = 0, noexp = -1;
+    long long origem = -1; int kv16 = -1, ctx = 0, noexp = -1; double expram = -1;
     perfil_path(fn, sizeof fn, model_path);
     FILE *f = fopen(fn, "r");
     if (!f) return;
@@ -28,6 +28,7 @@ static void perfil_apply(const char *model_path, int for_agent) {
         if (sscanf(line, "backend %31s", backend) == 1) continue;
         if (sscanf(line, "kv16 %d", &kv16) == 1) continue;
         if (sscanf(line, "ctx %d", &ctx) == 1) continue;
+        if (sscanf(line, "expram %lf", &expram) == 1) continue;
         sscanf(line, "noexpcache %d", &noexp);
     }
     fclose(f);
@@ -40,7 +41,29 @@ static void perfil_apply(const char *model_path, int for_agent) {
     if (kv16 >= 0 && !getenv("KATANA_KV16")) { snprintf(buf, sizeof buf, "KATANA_KV16=%d", kv16); putenv_dup(buf); }
     if (!for_agent && ctx > 0 && !getenv("KATANA_CTX")) { snprintf(buf, sizeof buf, "KATANA_CTX=%d", ctx); putenv_dup(buf); }
     if (noexp > 0 && !getenv("KATANA_NOEXPCACHE")) putenv_dup("KATANA_NOEXPCACHE=1");
-    fprintf(stderr, "Perfil: %s (backend=%s kv16=%d ctx=%d)\n", fn, backend[0] ? backend : "-", kv16, ctx);
+    /* arena de RAM para especialistas (katana prepare decidiu com margem de seguranca; ver prepare() acima);
+       a variavel do usuario, se setada manualmente, sempre vence */
+    if (expram > 0 && !getenv("KATANA_EXPERT_RAM")) { snprintf(buf, sizeof buf, "KATANA_EXPERT_RAM=%.3f", expram); putenv_dup(buf); }
+    if (expram > 0) fprintf(stderr, "Perfil: %s (backend=%s kv16=%d ctx=%d expram=%.3f)\n", fn, backend[0] ? backend : "-", kv16, ctx, expram);
+    else fprintf(stderr, "Perfil: %s (backend=%s kv16=%d ctx=%d)\n", fn, backend[0] ? backend : "-", kv16, ctx);
+}
+
+/* RAM util AGORA nesta maquina (bytes), com margem de seguranca tirada: ram_avail()/ram_total()
+   (cpu_kernels.c), nao um valor fixo de outra maquina. Margem (pedido do dono, 2026-11-28: "nao
+   faz sentido usar toda a memoria que a pessoa tem"): pelo menos 20% da RAM livre ou 2 GB, o que
+   for maior, fica reservado para o sistema e outros programas. Usada por recomendar_quant() e
+   pela decisao de arena/bundle em prepare(), e tambem por "katana quantize" (main.c) sem modelo
+   carregado. ram_av_out e ram_tot_out, quando nao NULL, recebem as medidas brutas (para imprimir). */
+static uint64_t ram_usable_now(uint64_t *ram_av_out, uint64_t *ram_tot_out) {
+    const uint64_t ram_av = ram_avail(), ram_tot = ram_total();
+    const uint64_t margin_min = (uint64_t)2 << 30;
+    const uint64_t margin = ram_av ? ram_av / 5 : (ram_tot ? ram_tot / 5 : 0);
+    const uint64_t margin_use = margin > margin_min ? margin : margin_min;
+    if (ram_av_out) *ram_av_out = ram_av;
+    if (ram_tot_out) *ram_tot_out = ram_tot;
+    if (ram_av > margin_use) return ram_av - margin_use;
+    if (!ram_av && ram_tot > margin_use) return ram_tot - margin_use;
+    return 0;
 }
 
 /* ---------- prepare: inspeciona modelo e maquina, decide o plano, executa o seguro, grava o perfil ----------
@@ -58,24 +81,27 @@ static double bpw_fmt(uint32_t t) {
 
 /* recomenda um tipo de quantizacao para esta maquina (ESTIMATIVA). Devolve o T_* alvo, ou 0
    quando nao vale requantizar (origem ja <= o alvo sugerido). Imprime o raciocinio.
-   is_moe: modelo de mistura de especialistas; src_t: tipo representativo da origem. */
-static uint32_t recomendar_quant(size_t n_params, int is_moe, uint32_t src_t) {
+   is_moe: modelo de mistura de especialistas; src_t: tipo representativo da origem.
+   vram: orcamento real de VRAM desta maquina AGORA (bytes; 0 = sem GPU) -- gpu_budget(), nao um
+   valor fixo de outra maquina. ram: RAM util real desta maquina AGORA (bytes), ja com a margem de
+   seguranca tirada (ver ram_usable em prepare()). Antes (ate 2026-11-28) estas duas vinham de
+   constantes fixas (3,4 GB / 43 GB) calibradas na maquina do desenvolvedor; bug de portabilidade
+   corrigido medindo a maquina real. */
+static uint32_t recomendar_quant(size_t n_params, int is_moe, uint32_t src_t, double vram, double ram) {
     static const struct { uint32_t t; const char *name; double bpp; } S[] = {
         { T_Q8_0, "Q8_0", 1.06 }, { T_Q6_K, "Q6_K", 0.82 }, { T_Q5_K, "Q5_K_M", 0.70 },
         { T_Q4_K, "Q4_K_M", 0.58 }, { T_Q2_K, "Q2_K", 0.36 } };
-    const double vram = 3.4e9;      /* orcamento pratico da RTX 3050 4 GB para rodar inteiro na GPU */
-    const double ram  = 43.0e9;     /* RAM util desta maquina */
     uint32_t tgt;
     if (is_moe) {
         const double q4 = (double)n_params * 0.58, q2 = (double)n_params * 0.36;
         if (q4 <= ram) {
             tgt = T_Q4_K;
-            printf("  - Tipo recomendado (estimativa): Q4_K_M  (~%.1f GB) -- MoE: equilibrio qualidade/tamanho, cabe na RAM util (~43 GB)\n", q4 / 1e9);
+            printf("  - Tipo recomendado (estimativa): Q4_K_M  (~%.1f GB) -- MoE: equilibrio qualidade/tamanho, cabe na RAM util medida agora (~%.1f GB)\n", q4 / 1e9, ram / 1e9);
         } else {
             tgt = T_Q2_K;
-            printf("  - Tipo recomendado (estimativa): Q2_K  (~%.1f GB) -- MoE: Q4_K_M (~%.1f GB) nao caberia na RAM util (~43 GB)\n", q2 / 1e9, q4 / 1e9);
+            printf("  - Tipo recomendado (estimativa): Q2_K  (~%.1f GB) -- MoE: Q4_K_M (~%.1f GB) nao caberia na RAM util medida agora (~%.1f GB)\n", q2 / 1e9, q4 / 1e9, ram / 1e9);
         }
-    } else {
+    } else if (vram > 0) {
         int pick = -1;
         for (int i = 0; i < 5; i++) {
             if (S[i].t == T_Q2_K) break;        /* denso nunca cai sozinho em Q2_K */
@@ -83,13 +109,18 @@ static uint32_t recomendar_quant(size_t n_params, int is_moe, uint32_t src_t) {
         }
         if (pick >= 0) {
             tgt = S[pick].t;
-            printf("  - Tipo recomendado (estimativa): %s  (~%.1f GB) -- denso: maior K-quant que cabe no orcamento de VRAM (~3,4 GB) para rodar inteiro na GPU\n",
-                   S[pick].name, (double)n_params * S[pick].bpp / 1e9);
+            printf("  - Tipo recomendado (estimativa): %s  (~%.1f GB) -- denso: maior K-quant que cabe no orcamento de VRAM medido agora (~%.1f GB) para rodar inteiro na GPU\n",
+                   S[pick].name, (double)n_params * S[pick].bpp / 1e9, vram / 1e9);
         } else {
             tgt = T_Q4_K;
-            printf("  - Tipo recomendado (estimativa): Q4_K_M  (~%.1f GB) -- denso: nem Q4_K cabe na VRAM (~3,4 GB); roda parcial/CPU\n",
-                   (double)n_params * 0.58 / 1e9);
+            printf("  - Tipo recomendado (estimativa): Q4_K_M  (~%.1f GB) -- denso: nem Q4_K cabe na VRAM medida agora (~%.1f GB); roda parcial/CPU\n",
+                   (double)n_params * 0.58 / 1e9, vram / 1e9);
         }
+    } else {    /* sem GPU: a mesma logica do MoE, mas para o modelo denso inteiro mapeado na RAM */
+        const double q4 = (double)n_params * 0.58, q2 = (double)n_params * 0.36;
+        tgt = q4 <= ram ? T_Q4_K : T_Q2_K;
+        printf("  - Tipo recomendado (estimativa): %s  (~%.1f GB) -- sem GPU: %s na RAM util medida agora (~%.1f GB)\n",
+               qtype_name(tgt), (tgt == T_Q4_K ? q4 : q2) / 1e9, tgt == T_Q4_K ? "cabe" : "Q4_K_M nao caberia", ram / 1e9);
     }
     if (bpw_fmt(tgt) >= bpw_fmt(src_t) - 1e-6) {
         printf("    (a origem ja esta em %s, ~%.2f bits/peso <= o alvo; nao vale requantizar)\n", qtype_name(src_t), bpw_fmt(src_t));
@@ -106,6 +137,10 @@ static int prepare(Model *m, const char *path) {
     const int gpu_ok = gpu.on;
     const int have_gpu = gpu.vram > 0;
     const int packable = !c->g4 && !c->ssm_inner;   /* pack ainda nao cobre gemma4 nem DeltaNet */
+
+    /* RAM real desta maquina, medida agora -- nao um valor fixo de outra maquina (ram_usable_now() acima). */
+    uint64_t ram_av, ram_tot;
+    const uint64_t ram_usable = ram_usable_now(&ram_av, &ram_tot);
 
     /* tipo de quantizacao: a matriz representativa (gate do feed-forward; especialista num MoE) */
     uint32_t qt = T_F32, qte = 0;
@@ -152,6 +187,8 @@ static int prepare(Model *m, const char *path) {
     if (have_gpu) printf("Maquina: GPU %s %.1f GB (orcamento %.0f MB); tamanho estimado na VRAM %.0f MB\n",
                          gpu.name, gpu.vram / 1073741824.0, budget / 1048576.0, total_ch / 1048576.0);
     else printf("Maquina: sem GPU disponivel agora; plano para CPU\n");
+    printf("Maquina: RAM total %.1f GB, livre agora %.1f GB; util com margem de seguranca %.1f GB (medido nesta maquina)\n",
+           ram_tot / 1e9, ram_av / 1e9, ram_usable / 1e9);
 
     printf("\nDecisoes:\n");
     printf("  - Cabe inteiro na VRAM: %s\n", fits ? "sim" : "nao");
@@ -166,7 +203,8 @@ static int prepare(Model *m, const char *path) {
     if (c->n_expert && !fits && (qte == T_Q6_K || qte == T_Q5_K || qte == T_Q8_0 || qte == T_F16 || qte == T_BF16))
         printf("  - Sugestao: os especialistas estao em %s; requantizados em Q4_K caberiam mais vagas na VRAM (nao requantizo sozinho)\n", qtype_name(qte));
 
-    recomendar_quant(m->n_params, c->n_expert > 0, c->n_expert ? qte : qt);
+    recomendar_quant(m->n_params, c->n_expert > 0, c->n_expert ? qte : qt,
+                      (double)(have_gpu ? budget : 0), (double)ram_usable);
 
     printf("\nOtimizacoes para %s:\n", c->arch);
     printf("  aplicadas: backend %s, cache KV %d bits, ajuste de ladrilhos (tune), shards no layout da GPU (pack)%s\n",
@@ -221,22 +259,64 @@ static int prepare(Model *m, const char *path) {
         } else { printf("  - calor: adiado (a GPU esta ocupada; o cache de especialistas nao esta ativo)\n"); pend_gpu = 1; }
     }
 
+    /* 4) bundle de quantizacao mista + arena de RAM para os especialistas: automatico quando a parte do
+       modelo que fica fora da VRAM (ESTIMATIVA) nao cabe confortavel na RAM livre com a margem de seguranca
+       (ram_usable, calculada acima). So se aplica a MoE. A env var do usuario, se setada, sempre vence -- aqui
+       so gravamos o mesmo valor no perfil, nao decidimos por cima dela. Decisao do dono, 2026-11-28: nunca usar
+       100% da RAM livre; a arena nunca passa do teto de 25 GB que et_init() ja impoe. */
+    double expram_gb = 0.0;
+    const char *arena_status = "n/a";
+    if (c->n_expert) {
+        const char *uev = getenv("KATANA_EXPERT_RAM");
+        const int manual = uev && atof(uev) > 0;
+        if (manual) {
+            expram_gb = atof(uev);
+            printf("  - arena de RAM: KATANA_EXPERT_RAM=%.2f definido pelo usuario; mantido (nao decido por cima)\n", expram_gb);
+            arena_status = "manual";
+        } else {
+            /* parte do modelo que fica fora da VRAM e precisa ser lida de RAM/disco a cada passo (ESTIMATIVA) */
+            const double off_gpu = have_gpu ? (total > budget ? (double)(total - budget) : 0.0) : (double)total;
+            if (off_gpu > (double)ram_usable && ram_usable > 0) {
+                expram_gb = ram_usable / 1e9;
+                if (expram_gb > 25.0) expram_gb = 25.0;   /* mesmo teto de et_init() */
+                printf("  - arena de RAM: parte fora da VRAM (~%.1f GB, estimativa) nao cabe confortavel na RAM livre com margem (~%.1f GB); ligando arena de %.1f GB\n",
+                       off_gpu / 1e9, ram_usable / 1e9, expram_gb);
+                arena_status = "ligada";
+            } else {
+                printf("  - arena de RAM: nao necessaria (parte fora da VRAM ~%.1f GB, estimativa, cabe confortavel na RAM livre com margem ~%.1f GB)\n",
+                       off_gpu / 1e9, ram_usable / 1e9);
+                arena_status = "nao";
+            }
+        }
+        if (expram_gb > 0) {
+            char exb[1100];
+            et_bx_name(exb, sizeof exb, path);
+            struct stat stb;
+            if (stat(exb, &stb) == 0) printf("  - bundle (.exb): ja existe em %s\n", exb);
+            else {
+                printf("  - bundle (.exb): criando pacote de quantizacao mista para os especialistas (katana bundle)...\n");
+                etb_write(path);
+            }
+        }
+    }
+
     /* ---- grava o perfil ---- */
     char fn[1200];
     perfil_path(fn, sizeof fn, path);
     FILE *f = fopen(fn, "w");
     if (f) {
-        fprintf(f, "katana-perfil 1\norigem %lld\ngpu %s\nbackend %s\nkv16 %d\nctx %d\nnoexpcache 0\nvagas %d\ntune %s\n",
+        fprintf(f, "katana-perfil 1\norigem %lld\ngpu %s\nbackend %s\nkv16 %d\nctx %d\nnoexpcache 0\nvagas %d\ntune %s\nexpram %.3f\n",
                 (long long)m->fsize, have_gpu ? gpu.name : "-", backend, kv16, ctx_sug,
-                (gpu_ok && gx.on) ? gx.S : 0, did_tune ? "sim" : "nao");
+                (gpu_ok && gx.on) ? gx.S : 0, did_tune ? "sim" : "nao", expram_gb);
         fclose(f);
         printf("\nPerfil gravado em %s\n", fn);
     } else printf("\nNao consegui gravar o perfil em %s\n", fn);
 
-    printf("Resumo: pack=%s  tune=%s  calor=%s%s\n",
+    printf("Resumo: pack=%s  tune=%s  calor=%s  arena=%s%s\n",
            did_pack ? "feito" : !packable ? "n/a" : shards.use ? "ja estava" : "nao",
            did_tune ? "feito" : fits ? "pendente" : "n/a",
            c->n_expert ? (did_heat ? "feito" : "pendente") : "n/a",
+           arena_status,
            pend_gpu ? "   (partes de GPU pendentes: a placa estava ocupada)" : "");
     printf("Agora chat/serve/agent usam este perfil automaticamente (uma variavel de ambiente do usuario vence).\n");
     return 0;

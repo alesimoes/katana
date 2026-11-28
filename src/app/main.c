@@ -648,8 +648,16 @@ static int quantize_cmd(const char *in, const char *out_arg, const char *type_ar
         if (bpw_fmt(tgt) >= bpw_fmt(rep) - 1e-6)
             printf("  aviso: a origem (~%.2f bits/peso) nao e maior que o alvo; o tamanho pode nao diminuir (os tensores menores sao copiados)\n", bpw_fmt(rep));
     } else {
-        printf("Escolhendo o tipo para esta maquina (RTX 3050 4 GB, ~43 GB RAM util; estimativa):\n");
-        const uint32_t s = recomendar_quant(n_params, is_moe, rep);
+        /* sem modelo carregado (so o GGUF foi lido): mede a GPU e a RAM reais desta maquina agora, com uma
+           sondagem leve de GPU (mesmo padrao de catalog.c hw_probe), em vez de um valor fixo de outra maquina. */
+        KvkInfo kinfo;
+        if (!gpu.vram && kvk_init(&kinfo) && kinfo.vram_bytes) { gpu.vram = kinfo.vram_bytes; snprintf(gpu.name, sizeof gpu.name, "%.*s", (int)sizeof gpu.name - 1, kinfo.name); }
+        const double vram_q = gpu.vram ? (double)gpu_budget() : 0.0;
+        uint64_t ram_av_q, ram_tot_q;
+        const double ram_q = (double)ram_usable_now(&ram_av_q, &ram_tot_q);
+        printf("Escolhendo o tipo para esta maquina (medido agora: %s, RAM util ~%.1f GB; estimativa):\n",
+               gpu.vram ? gpu.name : "sem GPU", ram_q / 1e9);
+        const uint32_t s = recomendar_quant(n_params, is_moe, rep, vram_q, ram_q);
         if (s == 0) { free(ts); return 0; }
         qtype_from_name(qtgt_label(s), &tgt, &ft, &blk);
     }
