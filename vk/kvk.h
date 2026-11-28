@@ -674,6 +674,7 @@ int kvk_init(KvkInfo *info) {
         kvk__lib = (void *)LoadLibraryA("vulkan-1.dll");
 #else
         kvk__lib = dlopen("libvulkan.so.1", RTLD_NOW | RTLD_LOCAL);
+        if (!kvk__lib) kvk__lib = dlopen("libvulkan.so", RTLD_NOW | RTLD_LOCAL);      /* Android: sem o .1 (celular, 2026-11-27) */
 #endif
         if (!kvk__lib) { kvk__seterr("biblioteca Vulkan nao encontrada"); return 0; }
     }

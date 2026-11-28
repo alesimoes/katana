@@ -121,10 +121,23 @@ static float dot_h(const float *a, const uint16_t *b, int n) {
     for (; j < n; j++) s += a[j] * _mm_cvtss_f32(_mm_cvtph_ps(_mm_cvtsi32_si128(b[j])));
     return s;
 }
+#elif defined(__ARM_NEON)
+/* NEON (celular/ARM, 2026-11-27): mesmo somatorio de 8 em 8 (dois acumuladores de 4), conferido no attbench
+   real (RQCY903EZ7F) contra a referencia antiga: diferenca igual ao x86 (~1e-7). */
+static float dot_h(const float *a, const uint16_t *b, int n) {
+    float32x4_t acc0 = vdupq_n_f32(0.0f), acc1 = vdupq_n_f32(0.0f);
+    int j = 0;
+    for (; j + 8 <= n; j += 8) {
+        acc0 = vfmaq_f32(acc0, vld1q_f32(a + j), vcvt_f32_f16(vld1_f16((const float16_t *)(b + j))));
+        acc1 = vfmaq_f32(acc1, vld1q_f32(a + j + 4), vcvt_f32_f16(vld1_f16((const float16_t *)(b + j + 4))));
+    }
+    float s = vaddvq_f32(vaddq_f32(acc0, acc1));
+    for (; j < n; j++) s += a[j] * f16_to_f32(b[j]);
+    return s;
+}
 #else
-/* sem AVX2 (porte para ARM/outras plataformas, 2026-11-27): o mesmo somatorio, sem SIMD. Mais lento, nunca testado
-   num celular; serve so para compilar e conferir a saida contra a versao AVX2 (katana selftest) antes de ganhar
-   uma versao NEON. */
+/* sem AVX2 nem NEON (porte generico, 2026-11-27): o mesmo somatorio, sem SIMD. Mais lento; serve so para compilar
+   e conferir a saida contra a versao AVX2 (katana selftest) antes de ganhar SIMD nessa plataforma. */
 static float dot_h(const float *a, const uint16_t *b, int n) {
     float s = 0.0f;
     for (int j = 0; j < n; j++) s += a[j] * f16_to_f32(b[j]);
@@ -233,20 +246,7 @@ static void qn_dots(const float *q, size_t qst, int nq, const float *K, size_t s
 }
 #endif
 /* o[k..k+64) (128 com AVX-512) += soma de w[i] * v_i, linhas na ordem, acumulador em registradores */
-#ifndef __AVX2__
-/* sem AVX2 (porte para ARM/outras plataformas, 2026-11-27): mesma soma, sem SIMD. A versao AVX so cobre um bloco de
-   ate 64 colunas por chamada (o chamador repete a chamada com k crescendo de 64 em 64): aqui tem que ser igual,
-   senao uma segunda chamada soma de novo colunas que a primeira ja tinha coberto (bug real, achado pelo
-   `katana attbench` sob ARM: diferenca de 1,5 contra a referencia, onde no x86 era 2e-07). */
-static void qn_axpys(float *o, const float *w, const float *V, size_t st, int nb, int hd, int k) {
-    const int kend = (k + 64 <= hd) ? k + 64 : hd;
-    for (int kk = k; kk < kend; kk++) {
-        float a = o[kk];
-        for (int i = 0; i < nb; i++) a += w[i] * V[(size_t)i * st + kk];
-        o[kk] = a;
-    }
-}
-#else
+#ifdef __AVX2__
 static void qn_axpys(float *o, const float *w, const float *V, size_t st, int nb, int hd, int k) {
     if (k + 64 <= hd) {
         o += k; V += k;
@@ -267,6 +267,36 @@ static void qn_axpys(float *o, const float *w, const float *V, size_t st, int nb
         __m256 a = _mm256_loadu_ps(o + k);
         for (int i = 0; i < nb; i++) a = _mm256_fmadd_ps(_mm256_set1_ps(w[i]), _mm256_loadu_ps(V + (size_t)i * st + k), a);
         _mm256_storeu_ps(o + k, a);
+    }
+}
+#elif defined(__ARM_NEON)
+/* NEON (celular/ARM, 2026-11-27): mesmo bloco de ate 64 colunas por chamada, 4 de cada vez. Conferido no attbench
+   real (RQCY903EZ7F) contra a referencia antiga: diferenca igual ao x86 (~1e-7). */
+static void qn_axpys(float *o, const float *w, const float *V, size_t st, int nb, int hd, int k) {
+    const int kend = (k + 64 <= hd) ? k + 64 : hd;
+    int kk = k;
+    for (; kk + 4 <= kend; kk += 4) {
+        float32x4_t a = vld1q_f32(o + kk);
+        for (int i = 0; i < nb; i++) a = vfmaq_n_f32(a, vld1q_f32(V + (size_t)i * st + kk), w[i]);
+        vst1q_f32(o + kk, a);
+    }
+    for (; kk < kend; kk++) {
+        float a = o[kk];
+        for (int i = 0; i < nb; i++) a += w[i] * V[(size_t)i * st + kk];
+        o[kk] = a;
+    }
+}
+#else
+/* sem AVX2 nem NEON (porte generico, 2026-11-27): mesma soma, sem SIMD. A versao AVX/NEON so cobre um bloco de ate
+   64 colunas por chamada (o chamador repete a chamada com k crescendo de 64 em 64): aqui tem que ser igual, senao
+   uma segunda chamada soma de novo colunas que a primeira ja tinha coberto (bug real, achado pelo
+   `katana attbench` sob ARM antes de existir o ramo NEON: diferenca de 1,5 contra a referencia, onde no x86 era 2e-07). */
+static void qn_axpys(float *o, const float *w, const float *V, size_t st, int nb, int hd, int k) {
+    const int kend = (k + 64 <= hd) ? k + 64 : hd;
+    for (int kk = k; kk < kend; kk++) {
+        float a = o[kk];
+        for (int i = 0; i < nb; i++) a += w[i] * V[(size_t)i * st + kk];
+        o[kk] = a;
     }
 }
 #endif
@@ -318,8 +348,25 @@ static inline float qn_soft(float *sc, int nb, float bm) {
     }
     return qn_hsum8(s);
 }
+#elif defined(__ARM_NEON)
+/* NEON (celular/ARM, 2026-11-27): maximo vetorizado de 4 em 4; o softmax usa expf() da libm (sem aproximacao
+   vetorial propria: o ganho e pequeno e o risco de um bug sutil na exponencial nao vale, dado o que ja achamos
+   no qn_axpys). Conferido no attbench real. */
+static inline float qn_max(const float *sc, int nb, float bm0) {
+    float32x4_t m = vdupq_n_f32(bm0);
+    int i = 0;
+    for (; i + 4 <= nb; i += 4) m = vmaxq_f32(m, vld1q_f32(sc + i));
+    float t = vmaxvq_f32(m);
+    for (; i < nb; i++) if (sc[i] > t) t = sc[i];
+    return t;
+}
+static inline float qn_soft(float *sc, int nb, float bm) {
+    float s = 0.0f;
+    for (int i = 0; i < nb; i++) { const float e = expf(sc[i] - bm); sc[i] = e; s += e; }
+    return s;
+}
 #else
-/* sem AVX2 (porte para ARM/outras plataformas, 2026-11-27): mesmo resultado matematico (maximo e depois soma de
+/* sem AVX2 nem NEON (porte generico, 2026-11-27): mesmo resultado matematico (maximo e depois soma de
    exp(x - maximo)) com expf() da libm, sem a aproximacao vetorial de 8 em 8. */
 static inline float qn_max(const float *sc, int nb, float bm0) {
     float m = bm0;
@@ -1305,11 +1352,37 @@ static void rms_plain(float *x, int n, float eps) {
     for (int i = 0; i < n; i++) x[i] *= inv;
 }
 
+/* gemma4 com PLE (E2B/E4B): entrada por camada de um token, pronta para o residuo de cada camada.
+   Formula (llama.cpp gemma4.cpp, project_per_layer_inputs/build_inp_per_layer; os fatores 1/sqrt(2) da
+   soma final entram direto nos dois ramos, no peso ple_proj_norm (ja escalado na carga) e aqui em
+   tok_embd_scale, entao a soma final nao precisa de outra escala):
+     raw[l]  = per_layer_token_embd[tok][l] * sqrt(ple_dim)/sqrt(2)
+     proj[l] = rmsnorm(per_layer_model_proj @ x0, eps*dim) * (ple_proj_norm * 1/sqrt(2))
+     out[l]  = raw[l] + proj[l]
+   x0 e o embedding do token ja escalado por sqrt(dim) (o mesmo valor gravado em m->x por embed_row). */
+static void g4_ple_prep(Model *m, int tok, const float *x0, float *out) {
+    const Config *c = &m->cfg;
+    const int E = c->ple_dim, Ln = c->n_layers;
+    static float *raw, *proj;
+    if (!raw) { raw = xalloc((size_t)E * Ln, sizeof(float)); proj = xalloc((size_t)E * Ln, sizeof(float)); }
+    mat_row(raw, &m->ple_tok_embd, tok, E * Ln);
+    const float tok_embd_scale = sqrtf((float)E) / 1.41421356f;
+    for (int i = 0; i < E * Ln; i++) raw[i] *= tok_embd_scale;
+    matvec(proj, &m->ple_model_proj, x0, E * Ln, c->dim);
+    const float proj_eps = c->eps * (float)c->dim;
+    for (int l = 0; l < Ln; l++) {
+        float *seg = proj + (size_t)l * E;
+        rmsnorm(seg, seg, m->ple_proj_norm, E, proj_eps);
+        for (int i = 0; i < E; i++) out[(size_t)l * E + i] = seg[i] + raw[(size_t)l * E + i];
+    }
+}
+
 /* gemma4, uma camada, um token (m->x). Atencao com escala 1 (q e k normalizados por cabeca, v pela norma
    sem peso); camada local so ve as ultimas swa_win posicoes (anel no cache); sem attn_v, v = k antes da
    norma. Feed-forward: denso (GELU) e MoE lado a lado, cada um com sua norma de saida, somados e
    normalizados de novo antes do residuo; o roteador le o residuo normalizado sem peso, vezes a escala
-   do arquivo e 1/sqrt(dim). No fim a camada inteira e multiplicada por out_scale. */
+   do arquivo e 1/sqrt(dim). PLE (E2B/E4B): terceiro residuo por camada, antes do out_scale (ver
+   g4_ple_prep). No fim a camada inteira e multiplicada por out_scale. */
 /* ================= gpt-oss (arquitetura OpenAI MoE) =================
    atencao com "sink" por cabeca (logit extra no denominador do softmax) e janela deslizante nas
    camadas pares; MoE com SwiGLU OAI (alpha 1.702, limite 7) e vieses em gate/up/down; roteador com
@@ -1391,14 +1464,17 @@ static void go_layer(Model *m, const Layer *L, int l, int pos) {
 static void g4_layer(Model *m, const Layer *L, int l, int pos) {
     const Config *c = &m->cfg;
     const int d = c->dim, nh = c->n_heads, hd = L->hd_l, nkv = L->nkv_l, qd = nh * hd, kvd = nkv * hd;
-    const int group = nh / nkv, half = hd / 2, Hd = c->hidden_dense, K = c->n_used;
+    const int group = nh / nkv, half = hd / 2, Hd = L->hidden_l, K = c->n_used;
     const float *fr = L->swa ? m->rope_freq_swa : m->rope_freq;
-    static float *ya, *yb, *outs;
-    if (!ya) { ya = xalloc(d, sizeof(float)); yb = xalloc(d, sizeof(float)); outs = xalloc((size_t)MOE_KMAX * d, sizeof(float)); }
+    static float *ya, *yb, *outs, *pt, *pt2;
+    if (!ya) {
+        ya = xalloc(d, sizeof(float)); yb = xalloc(d, sizeof(float)); outs = xalloc((size_t)MOE_KMAX * d, sizeof(float));
+        if (c->ple_dim) { pt = xalloc(c->ple_dim, sizeof(float)); pt2 = xalloc(d, sizeof(float)); }
+    }
     float *x = m->x;
     rmsnorm(m->xb, x, L->attn_norm, d, c->eps);
     const int hasv = L->wv.q || L->wv.f;
-    {
+    if (!L->kv_shared) {
         float *const oo[3] = { m->q, m->k, m->v };
         const Mat *const ww[3] = { &L->wq, &L->wk, &L->wv };
         const int rr[3] = { qd, kvd, kvd };
@@ -1407,19 +1483,19 @@ static void g4_layer(Model *m, const Layer *L, int l, int pos) {
             matvec(m->k, &L->wk, m->xb, kvd, d);
             if (hasv) matvec(m->v, &L->wv, m->xb, kvd, d);
         }
-    }
-    if (!hasv) memcpy(m->v, m->k, kvd * sizeof(float));
+    } else matvec(m->q, &L->wq, m->xb, qd, d);     /* camada sem K/V proprio: so q (le o cache de outra camada) */
+    if (!L->kv_shared && !hasv) memcpy(m->v, m->k, kvd * sizeof(float));
     for (int h = 0; h < nh; h++) rmsnorm(m->q + h * hd, m->q + h * hd, L->q_norm, hd, c->eps);
-    for (int h = 0; h < nkv; h++) { rmsnorm(m->k + h * hd, m->k + h * hd, L->k_norm, hd, c->eps); rms_plain(m->v + h * hd, hd, c->eps); }
-    for (int i = 0; i < half; i++) {        /* RoPE em metades */
+    if (!L->kv_shared) for (int h = 0; h < nkv; h++) { rmsnorm(m->k + h * hd, m->k + h * hd, L->k_norm, hd, c->eps); rms_plain(m->v + h * hd, hd, c->eps); }
+    for (int i = 0; i < half; i++) {        /* RoPE em metades, em q sempre; em k so quando esta camada grava o cache */
         const float ang = pos * fr[i], cs = cosf(ang), sn = sinf(ang);
         for (int h = 0; h < nh; h++) { float *p = m->q + h * hd + i, a = p[0], b = p[half]; p[0] = a * cs - b * sn; p[half] = a * sn + b * cs; }
-        for (int h = 0; h < nkv; h++) { float *p = m->k + h * hd + i, a = p[0], b = p[half]; p[0] = a * cs - b * sn; p[half] = a * sn + b * cs; }
+        if (!L->kv_shared) for (int h = 0; h < nkv; h++) { float *p = m->k + h * hd + i, a = p[0], b = p[half]; p[0] = a * cs - b * sn; p[half] = a * sn + b * cs; }
     }
     float *kb = m->kcache ? m->kcache + L->kv_off : NULL, *vb = m->vcache ? m->vcache + L->kv_off : NULL;
     uint16_t *kh = m->kh ? m->kh + L->kv_off : NULL, *vh = m->vh ? m->vh + L->kv_off : NULL;
     const int cap = L->kv_cap;
-    g4_kv_put(kb, vb, kh, vh, (size_t)(pos % cap) * kvd, m->k, m->v, kvd);
+    if (!L->kv_shared) g4_kv_put(kb, vb, kh, vh, (size_t)(pos % cap) * kvd, m->k, m->v, kvd);
     const int win = L->swa && c->swa_win < cap ? c->swa_win : cap;
     const int t0 = pos - win + 1 > 0 ? pos - win + 1 : 0, n = pos - t0 + 1;
     {
@@ -1471,7 +1547,18 @@ static void g4_layer(Model *m, const Layer *L, int l, int pos) {
         for (int i = 0; i < d; i++) ya[i] += yb[i];
     }
     rmsnorm(ya, ya, L->post_ffn_norm, d, c->eps);
-    for (int i = 0; i < d; i++) x[i] = (x[i] + ya[i]) * L->out_scale;
+    for (int i = 0; i < d; i++) x[i] += ya[i];
+    if (c->ple_dim) {    /* PLE: terceiro residuo, com a entrada preparada por g4_ple_prep para esta camada */
+        const int E = c->ple_dim;
+        matvec(pt, &L->per_layer_inp_gate, x, E, d);
+        for (int i = 0; i < E; i++) pt[i] = gelu_t(pt[i]);
+        const float *inp_l = m->g4_ple + (size_t)l * E;
+        for (int i = 0; i < E; i++) pt[i] *= inp_l[i];
+        matvec(pt2, &L->per_layer_proj, pt, d, E);
+        rmsnorm(pt2, pt2, L->per_layer_post_norm, d, c->eps);
+        for (int i = 0; i < d; i++) x[i] += pt2[i];
+    }
+    for (int i = 0; i < d; i++) x[i] *= L->out_scale;
     if (layer_tap) layer_tap(l, pos, x);
 }
 

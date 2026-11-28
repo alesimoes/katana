@@ -27,6 +27,8 @@
 #include <time.h>
 #ifdef __AVX2__
 #include <immintrin.h>
+#elif defined(__ARM_NEON)
+#include <arm_neon.h>      /* porte ARM/celular, 2026-11-27: NEON no lugar do AVX2 */
 #endif
 #ifdef _OPENMP
 #include <omp.h>

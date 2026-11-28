@@ -69,6 +69,14 @@ static int qtest_known(void) {
     printf("valores conhecidos (MXFP4, IQ4_NL, IQ4_XS, Q2_K, IQ2_XXS, BF16, TQ2_0): %s", bad ? "FALHOU" : "OK");
     if (bad) printf(" (mascara %d)", bad);
     printf("\n");
+#if defined(__ARM_NEON)
+    {   /* NEON do Q4_K contra a escalar de sempre (o qtest normal nao serve para isto: a referencia dele
+           tambem passa por dequant()). 2026-11-27. */
+        const double d = dq_q4k_selftest();
+        printf("Q4_K NEON x escalar (10 blocos aleatorios): maior diferenca %.2e: %s\n", d, d == 0.0 ? "OK" : "FALHOU");
+        if (d != 0.0) bad |= 128;
+    }
+#endif
     return bad;
 }
 
@@ -583,7 +591,9 @@ static int pack(Model *m, const char *path, int64_t fsz) {
         Layer *L = &m->layers[l];
         Mat *one;
         const size_t Hl = c->n_expert && !L->eg ? (size_t)c->hidden_dense : H;
-        if (c->mla) {       /* MLA: as demais matrizes sobem convertidas na carga; so os especialistas viram shard */
+        if (c->mla || c->attn_gated) {       /* MLA ou atencao com portao (qwen35/qwen35moe/qwen4exp, DeltaNet): o
+             formato das matrizes de atencao nao e o que o P1 abaixo supoe (achado num segfault real, 2026-11-27,
+             empacotando o Qwen3.6); as demais matrizes sobem convertidas na carga, so os especialistas viram shard */
             if (L->eg) { ok = ok && pack_experts(mf, m, l, &total); count++; }
             printf("\rcamada %d de %d", l + 1, c->n_layers); fflush(stdout);
             continue;

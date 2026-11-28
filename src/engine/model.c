@@ -53,6 +53,11 @@ typedef struct {
     float rope_base_swa;
     float softcap;      /* logits finais: softcap * tanh(logit / softcap); 0 = sem */
     float emb_scale;    /* escala do embedding (0 = 1) */
+    /* gemma4 denso com embeddings por camada (PLE, E2B/E4B): tabela de token por camada, projecao do
+       embedding comum para o mesmo espaco, e um terceiro residuo por camada. Camadas no fim podem nao ter
+       K/V proprios (kv_shared_layers): reusam o cache da ultima camada propria do mesmo tipo (local/global). */
+    int ple_dim;        /* largura do embedding por camada (embedding_length_per_layer_input); 0 = sem PLE */
+    int kv_shared_n;    /* quantas camadas no fim compartilham K/V (attention.shared_kv_layers) */
     char arch[64];
 } Config;
 
@@ -87,6 +92,10 @@ typedef struct {
     float *router_scale, *exp_w;        /* escala da entrada do roteador [dim]; peso de cada especialista [n_expert] */
     float out_scale;                    /* escala da saida da camada */
     size_t kv_off; int kv_cap;          /* inicio da camada no cache KV da CPU e posicoes guardadas (local = anel) */
+    int kv_shared;                      /* 1 = sem K/V proprio: kv_off/kv_cap apontam para o cache da camada doadora */
+    int hidden_l;                       /* largura do feed-forward denso desta camada (gemma4 E2B/E4B: varia por camada) */
+    Mat per_layer_inp_gate, per_layer_proj;   /* PLE desta camada: [dim->ple_dim] e [ple_dim->dim] */
+    float *per_layer_post_norm;               /* [dim] */
     /* gpt-oss */
     float *sinks, *router_b, *eg_b, *eu_b, *ed_b;   /* sink por cabeca; vies do roteador; vies dos especialistas gate/up/down */
 } Layer;
@@ -120,6 +129,9 @@ typedef struct {
     uint64_t fid;                       /* identidade dos pesos: data e tamanho do arquivo e das especializacoes aplicadas (cache de prefixo) */
     float *x, *xb, *xb2, *q, *k, *v, *att, *hb, *hb2, *logits, *rope_freq;
     float *rope_freq_swa;               /* gemma4: frequencias das camadas locais */
+    Mat ple_tok_embd, ple_model_proj;   /* gemma4 PLE: tabela [n_layers*ple_dim] por token, projecao do embedding comum */
+    float *ple_proj_norm;               /* [ple_dim], peso ja com 1/sqrt(2) embutido (ver g4_ple_prep) */
+    float *g4_ple;                      /* [G4_NB][n_layers][ple_dim]: entrada por camada, pronta, de cada token do lote atual */
     struct Q4 *q4;                      /* qwen4exp: pesos e estado proprios (qwen4exp.c) */
     size_t n_params;
 } Model;
@@ -521,6 +533,68 @@ static int dequant_ext(uint32_t type, const uint8_t *src, float *out, size_t n) 
     }
 }
 
+/* Q4_K: a mesma conta de sempre (nunca tocada nesta sessao), mantida so como referencia confiavel para a versao
+   NEON ser conferida contra ela (katana q4check, 2026-11-27): d*sc*q - dmin*m por sub-bloco de 32. */
+static void dq_q4k_scalar(const uint8_t *src, float *out, size_t n) {
+    for (size_t b = 0; b < n / 256; b++, src += 144) {
+        uint16_t h0, h1; memcpy(&h0, src, 2); memcpy(&h1, src + 2, 2);
+        const float d = f16_to_f32(h0), dmin = f16_to_f32(h1);
+        const uint8_t *sc = src + 4, *q = src + 16;
+        for (int j = 0; j < 8; j += 2, q += 32) {
+            int s1, m1, s2, m2;
+            k4_scale_min(j, sc, &s1, &m1); k4_scale_min(j + 1, sc, &s2, &m2);
+            for (int l = 0; l < 32; l++) *out++ = d * s1 * (q[l] & 0xF) - dmin * m1;
+            for (int l = 0; l < 32; l++) *out++ = d * s2 * (q[l] >> 4) - dmin * m2;
+        }
+    }
+}
+#if defined(__ARM_NEON)
+/* NEON (celular/ARM, 2026-11-27): mesma conta da dq_q4k_scalar, 16 pesos de uma vez (nibble -> uint32 -> float,
+   depois c1*v+c2). Conferida contra dq_q4k_scalar com dados aleatorios (katana q4check) antes de entrar em uso:
+   o qtest nao serve para isto (a referencia dele tambem chama dequant()). */
+static void dq_q4k_neon(const uint8_t *src, float *out, size_t n) {
+    const uint8x16_t m4 = vdupq_n_u8(0x0F);
+    for (size_t b = 0; b < n / 256; b++, src += 144) {
+        uint16_t h0, h1; memcpy(&h0, src, 2); memcpy(&h1, src + 2, 2);
+        const float d = f16_to_f32(h0), dmin = f16_to_f32(h1);
+        const uint8_t *sc = src + 4, *q = src + 16;
+        for (int j = 0; j < 8; j += 2, q += 32, out += 64) {
+            int s1, m1, s2, m2;
+            k4_scale_min(j, sc, &s1, &m1); k4_scale_min(j + 1, sc, &s2, &m2);
+            const float c1 = d * (float)s1, c2 = -dmin * (float)m1;
+            const float c3 = d * (float)s2, c4 = -dmin * (float)m2;
+            for (int i = 0; i < 32; i += 16) {
+                const uint8x16_t v = vld1q_u8(q + i);
+                const uint8x16_t lo8 = vandq_u8(v, m4), hi8 = vandq_u8(vshrq_n_u8(v, 4), m4);
+                const uint16x8_t lol = vmovl_u8(vget_low_u8(lo8)), loh = vmovl_u8(vget_high_u8(lo8));
+                const uint16x8_t hil = vmovl_u8(vget_low_u8(hi8)), hih = vmovl_u8(vget_high_u8(hi8));
+                vst1q_f32(out + i +  0, vmlaq_n_f32(vdupq_n_f32(c2), vcvtq_f32_u32(vmovl_u16(vget_low_u16(lol))), c1));
+                vst1q_f32(out + i +  4, vmlaq_n_f32(vdupq_n_f32(c2), vcvtq_f32_u32(vmovl_u16(vget_high_u16(lol))), c1));
+                vst1q_f32(out + i +  8, vmlaq_n_f32(vdupq_n_f32(c2), vcvtq_f32_u32(vmovl_u16(vget_low_u16(loh))), c1));
+                vst1q_f32(out + i + 12, vmlaq_n_f32(vdupq_n_f32(c2), vcvtq_f32_u32(vmovl_u16(vget_high_u16(loh))), c1));
+                vst1q_f32(out + i + 32, vmlaq_n_f32(vdupq_n_f32(c4), vcvtq_f32_u32(vmovl_u16(vget_low_u16(hil))), c3));
+                vst1q_f32(out + i + 36, vmlaq_n_f32(vdupq_n_f32(c4), vcvtq_f32_u32(vmovl_u16(vget_high_u16(hil))), c3));
+                vst1q_f32(out + i + 40, vmlaq_n_f32(vdupq_n_f32(c4), vcvtq_f32_u32(vmovl_u16(vget_low_u16(hih))), c3));
+                vst1q_f32(out + i + 44, vmlaq_n_f32(vdupq_n_f32(c4), vcvtq_f32_u32(vmovl_u16(vget_high_u16(hih))), c3));
+            }
+        }
+    }
+}
+/* conferencia da NEON contra a escalar com dados aleatorios: 0 = bateu, >0 = maior diferenca absoluta encontrada */
+static double dq_q4k_selftest(void) {
+    enum { N = 2560 };     /* 10 blocos de 256 */
+    uint8_t src[144 * 10];
+    float outA[N], outB[N];
+    uint32_t r = 987654321u;
+    for (size_t i = 0; i < sizeof src; i++) { r = r * 1103515245u + 12345u; src[i] = (uint8_t)(r >> 16); }
+    dq_q4k_scalar(src, outA, N);
+    dq_q4k_neon(src, outB, N);
+    double worst = 0.0;
+    for (int i = 0; i < N; i++) { const double e = fabs((double)outA[i] - (double)outB[i]); if (e > worst) worst = e; }
+    return worst;
+}
+#endif
+
 static void dequant(uint32_t type, const uint8_t *src, float *out, size_t n) {
     if (dequant_ext(type, src, out, n)) return;
     if (type == T_Q4_0) {
@@ -582,17 +656,11 @@ static void dequant(uint32_t type, const uint8_t *src, float *out, size_t n) {
             for (int j = 0; j < 32; j++) out[j] = d * qs[j];
         }
     } else if (type == T_Q4_K) {
-        for (size_t b = 0; b < n / 256; b++, src += 144) {
-            uint16_t h0, h1; memcpy(&h0, src, 2); memcpy(&h1, src + 2, 2);
-            const float d = f16_to_f32(h0), dmin = f16_to_f32(h1);
-            const uint8_t *sc = src + 4, *q = src + 16;
-            for (int j = 0; j < 8; j += 2, q += 32) {
-                int s1, m1, s2, m2;
-                k4_scale_min(j, sc, &s1, &m1); k4_scale_min(j + 1, sc, &s2, &m2);
-                for (int l = 0; l < 32; l++) *out++ = d * s1 * (q[l] & 0xF) - dmin * m1;
-                for (int l = 0; l < 32; l++) *out++ = d * s2 * (q[l] >> 4) - dmin * m2;
-            }
-        }
+#if defined(__ARM_NEON)
+        dq_q4k_neon(src, out, n);
+#else
+        dq_q4k_scalar(src, out, n);
+#endif
     } else if (type == T_Q6_K) {
         for (size_t b = 0; b < n / 256; b++, src += 210) {
             const uint8_t *ql = src, *qh = src + 128;
@@ -877,8 +945,8 @@ static void load_model(Model *m, const char *path) {
     uint64_t align = 32;
     const char **merges = NULL; int *mlen = NULL; int n_merges = 0;
     Tokenizer *tk = &m->tk;
-    static int g4_nkv[1024], g4_swa[1024];      /* gemma4: cabecas kv e janela, por camada */
-    int g4_nkv_n = 0, g4_swa_n = 0, split_n = 1, split_no = 0;
+    static int g4_nkv[1024], g4_swa[1024], g4_ffl[1024];      /* gemma4: cabecas kv, janela e feed-forward denso, por camada */
+    int g4_nkv_n = 0, g4_swa_n = 0, g4_ffl_n = 0, split_n = 1, split_no = 0;
 
     for (uint64_t i = 0; i < n_kv; i++) {
         int kl; const char *k = rd_str(&r, &kl);
@@ -933,13 +1001,17 @@ static void load_model(Model *m, const char *path) {
             uint32_t et = rd_u32(&r); uint64_t n = rd_u64(&r);
             tk->toktype = xalloc(n, sizeof(int));
             for (uint64_t j = 0; j < n; j++) tk->toktype[j] = (int)rd_num(&r, et);
-        } else if (t == 9 && (key_ends(k, kl, ".attention.head_count_kv") || key_ends(k, kl, ".attention.sliding_window_pattern"))) {
-            const int kv = key_ends(k, kl, ".attention.head_count_kv");
+        } else if (t == 9 && (key_ends(k, kl, ".attention.head_count_kv") || key_ends(k, kl, ".attention.sliding_window_pattern")
+                              || key_ends(k, kl, ".feed_forward_length"))) {
+            /* por camada (gemma4): cabecas kv, janela local (bool) ou largura do feed-forward denso (E2B/E4B tem MLP duplo-largo nas camadas finais) */
+            const int which = key_ends(k, kl, ".attention.head_count_kv") ? 0 : key_ends(k, kl, ".attention.sliding_window_pattern") ? 1 : 2;
+            int *dst = which == 0 ? g4_nkv : which == 1 ? g4_swa : g4_ffl;
             uint32_t et = rd_u32(&r); uint64_t n = rd_u64(&r);
             if (et == 8 || et == 9) die("lista por camada: tipo inesperado");
-            for (uint64_t j = 0; j < n; j++) { const int v = (int)rd_num(&r, et); if (j < 1024) (kv ? g4_nkv : g4_swa)[j] = v; }
-            if (kv) { g4_nkv_n = n < 1024 ? (int)n : 1024; for (int j = 0; j < g4_nkv_n; j++) if (g4_nkv[j] > c->n_kv) c->n_kv = g4_nkv[j]; }
-            else g4_swa_n = n < 1024 ? (int)n : 1024;
+            for (uint64_t j = 0; j < n; j++) { const int v = (int)rd_num(&r, et); if (j < 1024) dst[j] = v; }
+            if (which == 0) { g4_nkv_n = n < 1024 ? (int)n : 1024; for (int j = 0; j < g4_nkv_n; j++) if (g4_nkv[j] > c->n_kv) c->n_kv = g4_nkv[j]; }
+            else if (which == 1) g4_swa_n = n < 1024 ? (int)n : 1024;
+            else { g4_ffl_n = n < 1024 ? (int)n : 1024; for (int j = 0; j < g4_ffl_n; j++) if (g4_ffl[j] > c->hidden) c->hidden = g4_ffl[j]; }
         } else if (t != 8 && t != 9) {
             double v = rd_num(&r, t);
             if (key_ends(k, kl, ".block_count")) c->n_layers = (int)v;
@@ -958,6 +1030,8 @@ static void load_model(Model *m, const char *path) {
             else if (key_ends(k, kl, ".ssm.inner_size")) c->ssm_inner = (int)v;
             else if (key_ends(k, kl, ".full_attention_interval")) c->attn_every = (int)v;
             else if (key_ends(k, kl, ".feed_forward_length")) c->hidden = (int)v;
+            else if (key_ends(k, kl, ".embedding_length_per_layer_input")) c->ple_dim = (int)v;
+            else if (key_ends(k, kl, ".attention.shared_kv_layers")) c->kv_shared_n = (int)v;
             else if (key_ends(k, kl, ".expert_count")) c->n_expert = (int)v;
             else if (key_ends(k, kl, ".expert_used_count")) c->n_used = (int)v;
             else if (key_ends(k, kl, ".attention.head_count")) c->n_heads = (int)v;
@@ -1114,14 +1188,23 @@ static void load_model(Model *m, const char *path) {
             L->nkv_l = l < g4_nkv_n && g4_nkv[l] > 0 ? g4_nkv[l] : c->n_kv;
             L->hd_l = L->swa ? c->hd_swa : c->hd;
             if (c->n_heads % L->nkv_l) die("gemma4: cabecas kv invalidas");
-            const size_t hq = (size_t)c->n_heads * L->hd_l, hk = (size_t)L->nkv_l * L->hd_l, Hd = c->hidden_dense;
+            /* camadas no fim sem K/V proprio (E2B/E4B): leem o cache da ultima camada propria do mesmo tipo
+               (local ou global), gravado mais acima no laco (kv_off/kv_cap copiados abaixo, perto do cache) */
+            const int kv_from_start = c->kv_shared_n > 0 ? c->n_layers - c->kv_shared_n : c->n_layers;
+            L->kv_shared = l >= kv_from_start;
+            const size_t hq = (size_t)c->n_heads * L->hd_l, hk = (size_t)L->nkv_l * L->hd_l;
+            const size_t Hd = l < g4_ffl_n && g4_ffl[l] > 0 ? (size_t)g4_ffl[l] : (size_t)c->hidden_dense;
+            L->hidden_l = (int)Hd;
             V1(attn_norm, "attn_norm.weight");
             M2(wq, "attn_q.weight", hq, d);
-            M2(wk, "attn_k.weight", hk, d);
-            snprintf(nm, sizeof nm, "blk.%d.attn_v.weight", l); L->wv = get_mat(&ts, nm, hk, d, 0, np);   /* sem attn_v: v sai de k */
+            if (L->kv_shared) { L->wk = (Mat){0}; L->wv = (Mat){0}; L->k_norm = NULL; }
+            else {
+                M2(wk, "attn_k.weight", hk, d);
+                snprintf(nm, sizeof nm, "blk.%d.attn_v.weight", l); L->wv = get_mat(&ts, nm, hk, d, 0, np);   /* sem attn_v: v sai de k */
+                snprintf(nm, sizeof nm, "blk.%d.attn_k_norm.weight", l); L->k_norm = get_tensor(&ts, nm, L->hd_l, 1, np);
+            }
             M2(wo, "attn_output.weight", d, hq);
             snprintf(nm, sizeof nm, "blk.%d.attn_q_norm.weight", l); L->q_norm = get_tensor(&ts, nm, L->hd_l, 1, np);
-            snprintf(nm, sizeof nm, "blk.%d.attn_k_norm.weight", l); L->k_norm = get_tensor(&ts, nm, L->hd_l, 1, np);
             V1(post_attn_norm, "post_attention_norm.weight");
             V1(ffn_norm, "ffn_norm.weight");
             M2(w_gate, "ffn_gate.weight", Hd, d);
@@ -1133,6 +1216,12 @@ static void load_model(Model *m, const char *path) {
                 float *os = get_tensor(&ts, nm, 1, 0, np);
                 L->out_scale = os ? os[0] : 1.0f;
                 free(os);
+            }
+            if (c->ple_dim) {    /* PLE: entrada e saida por camada, residuo proprio (ver g4_ple_prep/g4_layer) */
+                const size_t E = c->ple_dim;
+                M2(per_layer_inp_gate, "inp_gate.weight", E, d);
+                M2(per_layer_proj, "proj.weight", d, E);
+                snprintf(nm, sizeof nm, "blk.%d.post_norm.weight", l); L->per_layer_post_norm = get_tensor(&ts, nm, d, 1, np);
             }
             if (c->n_expert) {
                 const size_t E = c->n_expert;
@@ -1275,6 +1364,14 @@ static void load_model(Model *m, const char *path) {
 #undef M2
     }
     float *g4_ff = c->g4 ? get_tensor(&ts, "rope_freqs.weight", c->hd / 2, 0, np) : NULL;     /* divisores das frequencias globais */
+    if (c->ple_dim) {   /* PLE: tabela por token (uma linha por token, n_layers*ple_dim colunas) e projecao do embedding comum */
+        const size_t E = (size_t)c->ple_dim * c->n_layers;
+        m->ple_tok_embd = get_mat(&ts, "per_layer_token_embd.weight", V, E, 1, np);
+        m->ple_model_proj = get_mat(&ts, "per_layer_model_proj.weight", E, d, 1, np);
+        m->ple_proj_norm = get_tensor(&ts, "per_layer_proj_norm.weight", c->ple_dim, 1, np);
+        if (m->ple_proj_norm)    /* o 1/sqrt(2) da soma embedding+projecao (project_per_layer_inputs) ja entra no peso */
+            for (int i = 0; i < c->ple_dim; i++) m->ple_proj_norm[i] *= 0.70710678f;
+    }
     g_unread.name = xalloc(n_tensors + 1, 96); g_unread.bytes = xalloc(n_tensors + 1, sizeof(uint64_t)); g_unread.n = 0;
     for (uint64_t i = 0; i < n_tensors; i++) if (!ts.t[i].used) {
         size_t ne = 1; for (uint32_t k = 0; k < ts.t[i].ndims; k++) ne *= (size_t)ts.t[i].dims[k];
@@ -1286,16 +1383,26 @@ static void load_model(Model *m, const char *path) {
     size_t ctx = c->ctx, L = c->n_layers;
     if (c->g4) {    /* cache por camada: as locais guardam so a janela (anel), as globais o contexto todo */
         size_t tot = 0;
+        int last_local = -1, last_global = -1;    /* ultima camada com K/V proprio de cada tipo (E2B/E4B: as do fim compartilham) */
         for (int l = 0; l < c->n_layers; l++) {
             Layer *Ly = &m->layers[l];
+            if (Ly->kv_shared) {    /* sem cache proprio: aponta para a ultima camada propria do mesmo tipo */
+                const int src = Ly->swa ? last_local : last_global;
+                if (src < 0) die("gemma4: camada com K/V compartilhado sem doadora do mesmo tipo (local/global) antes dela");
+                Ly->kv_cap = m->layers[src].kv_cap;
+                Ly->kv_off = m->layers[src].kv_off;
+                continue;
+            }
             Ly->kv_cap = Ly->swa && (size_t)c->swa_win + G4_NB < ctx ? c->swa_win + G4_NB : (int)ctx;   /* folga: um lote grava antes de atender */
             Ly->kv_off = tot;
             tot += (size_t)Ly->kv_cap * Ly->nkv_l * Ly->hd_l;
+            if (Ly->swa) last_local = l; else last_global = l;
         }
         const char *e16 = getenv("KATANA_CPU_KV16");      /* padrao: fp16 a partir de 64k de contexto */
         c->kv16_cpu = e16 ? atoi(e16) != 0 : ctx > 65536;
         if (c->kv16_cpu) { m->kh = xalloc(tot, 2); m->vh = xalloc(tot, 2); }
         else { m->kcache = xalloc(tot, sizeof(float)); m->vcache = xalloc(tot, sizeof(float)); }
+        if (c->ple_dim) m->g4_ple = xalloc((size_t)G4_NB * c->n_layers * c->ple_dim, sizeof(float));
     } else if (c->ssm_inner) {    /* hibrido: cache so nas camadas de atencao completa */
         size_t na = 0;
         for (int l = 0; l < c->n_layers; l++) {

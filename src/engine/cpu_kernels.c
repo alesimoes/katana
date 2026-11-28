@@ -13,6 +13,18 @@ static float dot(const float *a, const float *b, int n) {
     __m128 lo = _mm_add_ps(_mm256_castps256_ps128(acc0), _mm256_extractf128_ps(acc0, 1));
     lo = _mm_hadd_ps(lo, lo); lo = _mm_hadd_ps(lo, lo);
     s = _mm_cvtss_f32(lo);
+#elif defined(__ARM_NEON)
+    /* NEON (celular/ARM, 2026-11-27): 16 de cada vez (quatro acumuladores de 4), igual ao passo do AVX2. Usado
+       pelo caminho generico (dequant + dot) de Q4_K/Q6_K/etc no celular -- e o maior consumidor de tempo da
+       geracao, por isso foi o primeiro a ganhar NEON de verdade (nao so compilar). */
+    float32x4_t acc0 = vdupq_n_f32(0.0f), acc1 = vdupq_n_f32(0.0f), acc2 = vdupq_n_f32(0.0f), acc3 = vdupq_n_f32(0.0f);
+    for (; j + 16 <= n; j += 16) {
+        acc0 = vfmaq_f32(acc0, vld1q_f32(a + j), vld1q_f32(b + j));
+        acc1 = vfmaq_f32(acc1, vld1q_f32(a + j + 4), vld1q_f32(b + j + 4));
+        acc2 = vfmaq_f32(acc2, vld1q_f32(a + j + 8), vld1q_f32(b + j + 8));
+        acc3 = vfmaq_f32(acc3, vld1q_f32(a + j + 12), vld1q_f32(b + j + 12));
+    }
+    s = vaddvq_f32(vaddq_f32(vaddq_f32(acc0, acc1), vaddq_f32(acc2, acc3)));
 #endif
     for (; j < n; j++) s += a[j] * b[j];
     return s;
@@ -62,6 +74,23 @@ static void q8_put(uint8_t *dst, const float *x, int n) {
         for (int i = 0; i < 32; i++) { const int v = (int)lrintf(x[i] * id); q[i] = (int8_t)(v > 127 ? 127 : v < -127 ? -127 : v); }
     }
 }
+#elif defined(__ARM_NEON)
+/* NEON (celular/ARM, 2026-11-27): o maximo absoluto vetorizado de 4 em 4; a quantizacao (arredondamento e corte)
+   fica escalar de proposito -- sao so 32 valores por bloco e o risco de um erro sutil de arredondamento (como o
+   achado no qn_axpys) nao compensa o ganho aqui. Conferido no katana qtest. */
+static void q8_put(uint8_t *dst, const float *x, int n) {
+    for (int b = 0; b < n / 32; b++, dst += 34, x += 32) {
+        float32x4_t am = vdupq_n_f32(0.0f);
+        for (int i = 0; i < 32; i += 4) am = vmaxq_f32(am, vabsq_f32(vld1q_f32(x + i)));
+        const float amax = vmaxvq_f32(am);
+        const float d = amax / 127.0f;
+        const uint16_t h = f32_to_f16(d);
+        memcpy(dst, &h, 2);
+        const float id = d > 0.0f ? 1.0f / d : 0.0f;
+        int8_t *q = (int8_t *)(dst + 2);
+        for (int i = 0; i < 32; i++) { const int v = (int)lrintf(x[i] * id); q[i] = (int8_t)(v > 127 ? 127 : v < -127 ? -127 : v); }
+    }
+}
 #else
 /* porte ARM, 2026-11-27: sem SIMD */
 static void q8_put(uint8_t *dst, const float *x, int n) {
@@ -87,6 +116,21 @@ static void q8_get(float *out, const uint8_t *src, int n) {
         const uint8_t *qs = src + 2;
         for (int i = 0; i < 32; i += 8)
             _mm256_storeu_ps(out + i, _mm256_mul_ps(d, _mm256_cvtepi32_ps(_mm256_cvtepi8_epi32(_mm_loadl_epi64((const __m128i *)(qs + i))))));
+    }
+}
+#elif defined(__ARM_NEON)
+/* NEON (celular/ARM, 2026-11-27): 8 int8 por vez, alargados pra int16 e depois pra int32 (duas metades de 4),
+   convertidos a float e multiplicados pela escala. Conferido no katana qtest. */
+static void q8_get(float *out, const uint8_t *src, int n) {
+    for (int b = 0; b < n / 32; b++, src += 34, out += 32) {
+        uint16_t h; memcpy(&h, src, 2);
+        const float32x4_t d = vdupq_n_f32(f16_to_f32(h));
+        const int8_t *qs = (const int8_t *)(src + 2);
+        for (int i = 0; i < 32; i += 8) {
+            const int16x8_t w16 = vmovl_s8(vld1_s8(qs + i));
+            vst1q_f32(out + i, vmulq_f32(d, vcvtq_f32_s32(vmovl_s16(vget_low_s16(w16)))));
+            vst1q_f32(out + i + 4, vmulq_f32(d, vcvtq_f32_s32(vmovl_s16(vget_high_s16(w16)))));
+        }
     }
 }
 #else
