@@ -522,7 +522,54 @@ c->kv_shared_n)` bail-out in `gpu_setup`/`vk_g4_build` is gone.
 - **`katana pack`/shards, `katana tune`, the expert-cache machinery**: not applicable (no experts) or not
   exercised for this model yet.
 
-## IBM Granite 4.0 H Tiny in the engine (CPU only, working since 2026-11-27)
+### Phone (Xclipse 540, Galaxy A56): why the batch path never engages, and what a tiled shader gets without it
+
+Measured directly on the device (`adb`), not estimated. `katana vkcaps` (new diagnostic command, `d9a1653`)
+confirms what the "Vulkan: sem matriz cooperativa fp16 16x16x16: prompt token a token" message already implied:
+the Xclipse 540 has **no `VK_KHR_cooperative_matrix`** (0 shapes listed), so `vkg.coop` is false and the whole
+batched path (`vk_plan`, `mm.comp`) is disabled — every token, prompt or generation, goes through the
+token-by-token kernels. The device does have `VK_KHR_shader_integer_dot_product`, `shaderFloat16`, `shaderInt8`
+and `storageBuffer8/16BitAccess`, all active; `subgroup_size` 64; `max_shared_bytes` 32768 (32 KB, smaller than
+a discrete card); unified memory (`unified_memory=1`, `vram_mb=6500` is the shared budget, not separate VRAM).
+Real baseline, this GGUF, this device (`katana run gemma4e2b.gguf "..." 40 0.5`, GPU path as it ships today):
+**prompt 3.7 tok/s, generation 3.5 tok/s** — effectively CPU speed; the opportunistic GPU matvec path
+(`vk_matvecs`) that helps on the notebook is not winning here.
+
+The project's own earlier finding (`docs/optimization-roadmap.md`, "Prototype tools/vkgemm": an unorganized
+compute shader on the notebook's RTX 3050 did 0.51 T mult/s; tiling with shared memory alone got to
+1.17-1.75; vectorized loads (4 values/read) to 1.75-2.6 — a 3-5x gain with **no matrix hardware involved**)
+was reproduced on this phone, as a standalone kernel microbenchmark (`tools/vkgemm_mobile/`, not wired into
+the engine yet), at shapes matching this model's dense products (1536x1536, 12288x1536, 1536x12288, batch 64
+and 256 tokens; fp16 storage, fp32 accumulate; every result checked bit-for-bit reproducible and validated
+against a CPU fp64 reference before timing):
+
+| Kernel | T mult/s | vs naive |
+|---|---|---|
+| naive (one output per thread, no tile, no vector) | 0.020-0.025 | 1x |
+| tiled + shared memory + vectorized `f16vec4` loads (64x64x32 tile, 256 threads, 4x4 register block) | 0.095-0.101 | **~4.1x** |
+| same tile, inputs packed int8 and accumulated with `dotPacked4x8EXT` (`GL_EXT_integer_dot_product`) | 0.064-0.068 | ~2.8x (slower than the fp16 tiled kernel) |
+
+Consistent across all four tested shapes and both batch sizes (64 and 256 tokens) — the ~4.1x tiled/vectorized
+gain and the int8-dot-product kernel landing about a third slower than the fp16 tiled one both held every time.
+The int8 kernel is bit-exact against an int64 CPU reference (packed dot product is correct on this driver), it
+is just not faster here: `dotPacked4x8EXT` is most likely software-emulated on this GPU rather than backed by a
+dedicated instruction, so packing to int8 adds overhead (the packing itself, and 4 separate operands to unpack
+per dot) without the throughput the instruction is supposed to buy. **Conclusion for this device: tiling +
+vectorized fp16 loads is the real, hardware-independent win (as the roadmap's own notebook prototype already
+showed); the int8 dot-product extension, while present and correct, is not worth using here.**
+
+What this does **not** yet answer: the end-to-end generation tok/s if this kernel replaced the token-by-token
+path. `mm.comp` (the engine's real batched kernel) already does the hard part for every weight type (Q4_K/Q5_K/
+Q6_K/Q8_0/Q5_1 decode into a shared-memory tile, vectorized) — only its inner step
+(`coopMatLoad`/`coopMatMulAdd`/`coopMatStore`) is coopmat-specific. Swapping that inner step for the
+register-blocked scalar loop proven in `tools/vkgemm_mobile/tiled_vec.comp`, and gating `vkg.coop` in
+`vk_plan` (`src/engine/vk_dense.c`) on `fp16` instead of requiring `coopmat`, is the next step — not done in
+this pass to avoid touching `vk_dense.c`/`mm.comp` while other work was in flight there, and because it needs a
+correctness pass per weight type (same GPU-vs-CPU check already used for every other architecture) before it
+can default on. `tools/vkgemm_mobile/bench.c` is a standalone, reusable harness (device probe, CPU-reference
+validation, timed loop) for whoever picks this up.
+
+## IBM Granite 4.0 H Tiny in the engine (CPU + GPU hybrid, working since 2026-11-27/28)
 
 Model: `models/granite/model.gguf` (unsloth/granite-4.0-h-tiny-GGUF, Q4_K_M, ~4.1 GB). First architecture in
 katana with a **Mamba-2** (state-space) layer type: `general.architecture = granitehybrid` is a hybrid of
@@ -626,6 +673,74 @@ unaffected).
   sampler defaults tuned for this model); `"2 + 2 ="` -> `4`; `"List three colors:"` -> `red, green, blue.`
   Coherent and correct, the best signal available without a reference engine to diff against.
 
+### GPU (Vulkan) hybrid for MoE, attention and the dense Mamba-2 projections (working since 2026-11-28)
+
+New file `src/engine/vk_granite.c` (`vk_gr_build`/`vk_gr_n`), wired into `mla_gpu_upload` (`src/engine/shards.c`)
+and into the `forward`/`forward_seq_in` dispatch (`src/engine/forward.c`), the same shape already used for the
+gemma4 and qwen35-dense hybrids (`vk_gemma4.c`, `vk_qwen35d.c`): no recorded Vulkan graph (the layers are not
+uniform — Mamba-2 vs attention — and the "grafo completo" path, `vk_emit_n`, assumes every layer is attention),
+instead a residual kept on the CPU, with the big matrix products going to the GPU each layer and coming back:
+
+- **Dense projections (GPU)**: `ssm_in`/`ssm_out` of a Mamba-2 layer and `attn_q/k/v/output` of an attention
+  layer, through the same precise batched product (`vk_mm_p`, weights decoded in two fp16 parts, activations
+  in fp32) already used by gemma4/qwen35-dense; `gr_mul` falls back to the CPU product per matrix when a
+  matrix did not make it to VRAM or its shape is not a multiple of 64 (same guard as `vk_qwen35d.c`'s
+  `qd_mul`), so nothing breaks if a future, bigger Granite checkpoint has odd dimensions.
+- **MoE (GPU), every layer, with the shared experts**: reused as-is, no new kernel — `vk_moe_init`/`vk_moe_n`
+  (`src/engine/vk_moe.c`), the exact "vagas" expert cache and batched routing already serving gemma4 and
+  qwen35moe. The only Granite-specific orchestration: `vkg.fn[l]` (the per-layer `ffn_norm` vector, which
+  `vk_moe_n` reads directly from the GPU) had to be uploaded by `vk_gr_build` itself, since Granite does not go
+  through the "grafo completo" setup that normally fills it; and the MoE output comes back through its own
+  buffer (`vkgr.moe_out`, zeroed before each call) instead of being added straight into the residual buffer,
+  because `residual_scale` (muP) has to multiply the feed-forward's output *before* the add — the same reason
+  gemma4 routes its MoE output through its own buffer instead of `vkb.x` directly (its `post_ffn2` norm).
+- **Attention core and Mamba-2 (CPU, on purpose)**: RoPE, the KV cache and the softmax/weighted-sum (`att_job`)
+  for attention layers, and the causal convolution + SSD recurrence + gate (`grh_conv`/`grh_recur`/`grh_gate`,
+  unchanged from `src/engine/granite.c`) for Mamba-2 layers, all stay on the CPU. The SSD recurrence is
+  sequential by construction (each position's state feeds the next), so there is little to parallelize per
+  token on the GPU without a dedicated chunked-scan kernel (the kind the reference engine and DeltaNet-style
+  engines use for Mamba-2/-1 on CUDA); writing one was judged too large for this session (a kernel class the
+  project has not needed before, on top of validating it numerically) against the measured benefit — see
+  below — so, like the gemma4 PLE residual (small matrices, sequential, not worth the round trip), the
+  recurrence and the attention core stay on the CPU and only the big matrix products move to the GPU. This is
+  a deliberate hybrid, not an unfinished GPU path: `vk_gr_build` returns 1 (GPU on) whenever the MoE expert
+  cache and the projection buffers fit in VRAM.
+- **Decoding (one token) stays on the CPU by default**: same finding as gemma4 (`KATANA_VK_G4DEC`) — the
+  round trip to the GPU per layer for a single token does not pay for itself at this batch size. `vk_gr_n`
+  does accept `B = 1` (validated below) and `KATANA_VK_GR_DEC=1` turns it on for decoding too, but the
+  default keeps `forward()`'s token-by-token path on `grh_layers_n` (CPU) and only uses `vk_gr_n` for batches
+  (the prompt, `forward_seq_in`, `KATANA_VK_GR=0` turns the whole hybrid off).
+- A pre-existing buffer-sizing bug surfaced and was fixed along the way: `vk_setup`'s single-token GPU
+  work buffers (`gpu.vxb`/`gpu.vob`, used by `katana selftest`'s per-matrix GPU check and by the hybrid
+  "host" mode of other architectures) were sized from `dim`/`hidden`/`n_heads*hd`/`hidden_dense`/
+  `n_shared*hidden` only, never from `ssm_inner` — harmless for the DeltaNet models (`ssm_inner` happens to be
+  smaller than those), but Granite's `ssm_inner` (3072) is bigger than `dim` (1536), which overflowed the
+  buffer and crashed Vulkan as soon as `ssm_out` (3072 columns) was tested. Fixed with one extra bound in
+  `vk_setup` (`src/engine/vk_dense.c`); also benefits any future DeltaNet/Mamba checkpoint with a large
+  `ssm_inner`.
+
+### Numeric verification of the GPU path
+
+Same method and tolerance as every other architecture's GPU work this session (gemma4 included), via
+`katana selftest models/granite/model.gguf`, GPU vs CPU:
+
+- **Per matrix** (uploaded `ssm_in`/`ssm_out`, `attn_q/k/v/output`, the shared experts' `gate`/`down`): GPU
+  single-vector product vs the exact CPU product, worst relative error **4.59e-08** (same order as the
+  CPU-only numbers already in this section; the routed experts themselves are not tested individually here,
+  same as every other MoE architecture — they go through the "vagas" cache, not a plain uploaded matrix).
+- **Whole pipeline, batch (`vk_gr_n`, prompt) vs exact CPU, 23 tokens**: maior diferenca de logit **1.1e-03**,
+  same argmax — well inside the project's logit tolerance (~0.05).
+- **Whole pipeline, one token at a time (`vk_gr_n`, `KATANA_VK_GR_DEC=1`) vs exact CPU, 23 tokens**: maior
+  diferenca de logit **6.9e-04** to **1.9e-03** depending on the run (float16-tiled products have run-to-run
+  tiling variance, like every other Vulkan batch path in this engine), same argmax.
+- `katana run models/granite/model.gguf "Oi, como vai?" ... 0.5`, with and without `KATANA_CPU=1`: coherent
+  Portuguese in both. With a short prompt (5-21 tokens) the observed tok/s for prompt and decoding were close
+  between GPU and CPU-only (noise-level differences, consistent with the decode-on-CPU default above and with
+  a cold expert cache during a short run); with a longer prompt (94 tokens) the GPU batch path measured faster
+  for the prompt phase (~48 vs ~36 tok/s) in one, informal, non-alternated run — not a controlled benchmark
+  (none were done this phase, per the project's current rules), just the ordinary `katana run` output, reported
+  as observed and not as a result.
+
 ### Left for later (not started)
 
 - **Chat template / tool calling**: the GGUF's Jinja template is a full tool-calling format (own
@@ -635,7 +750,8 @@ unaffected).
   (`PRE_*` in `tokenizer.c`); it currently falls back to the legacy pattern, which is good enough for the plain
   English above but not guaranteed byte-exact for code, numbers or non-English text. Needs the actual DBRX
   regex.
-- **GPU (Vulkan/OpenCL)**: `gpu_setup` bails to CPU for `c->gr` on purpose (message, not crash) — Mamba-2 has
-  no graph/kernel on the GPU yet.
+- **Mamba-2 on the GPU**: a real SSD chunked-scan kernel, if a future measurement shows the CPU recurrence is
+  the bottleneck on a machine without a fast CPU (e.g. the phone from the handoff notes, which currently has no
+  GPU path for this architecture at all). Not attempted this session (see above).
 - **The 40-layer reference-engine divergence above**: not fully explained; worth finishing if a GPU-free,
   bit-exact cross-check matters more than it does today.
