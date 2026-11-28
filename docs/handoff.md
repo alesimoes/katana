@@ -5,6 +5,39 @@ Vulkan backend. To resume: read this file, then `knowledge.md` (everything that 
 `comparisons.md` (all comparison tables) and `plan.md` (priorities).
 
 
+## Update (2026-11-28): `katana prepare` measures real RAM/VRAM, decides the expert arena/bundle on its own
+
+Portability bug fixed: `recomendar_quant()` in `src/engine/prepare.c` used fixed constants (`vram = 3.4e9`,
+`ram = 43.0e9`, comments said "RTX 3050 4GB" / "RAM util desta maquina") to recommend a quantization type,
+so the recommendation was calibrated for the developer's machine and ignored the real hardware of whatever
+machine `katana prepare` runs on. Now it takes the real VRAM budget (`gpu_budget()`, already measured) and
+the real usable RAM (new `ram_usable_now()`) as parameters; the same fix applies to the `katana quantize`
+fallback path in `main.c` (which probes the GPU with a light `kvk_init()`, same pattern as `catalog.c`'s
+`hw_probe`, since no model is loaded there). `ram_avail()` (`cpu_kernels.c`) used to return 0 outside Linux;
+it now also supports Windows (`GlobalMemoryStatusEx`), and a new `ram_total()` follows the same pattern used
+elsewhere (`catalog.c`, `launch.c`, `vk_moe.c`). Both accept a test-only override (`KATANA_RAM_AVAIL_MB`,
+`KATANA_RAM_TOTAL_MB`), the same idea as `KATANA_VRAM_AVAIL_MB` in `vk_dense.c`, to simulate a machine with
+less RAM without needing different hardware.
+
+`katana prepare` also decides, on its own, whether to turn on the MoE expert RAM arena (`KATANA_EXPERT_RAM`,
+`src/engine/expert_tier.c`) and its mixed-quantization bundle (`<model>.exb`), which previously required the
+user to run `katana bundle` by hand and export the env var themselves. The rule (safety margin, never using
+100% of free RAM, owner's explicit request): reserve at least 20% of free RAM or 2 GB, whichever is larger,
+for the system and other programs; if the part of the model that stays outside the VRAM budget (an estimate)
+does not fit comfortably in what is left, `katana prepare` creates the `.exb` bundle automatically (if it does
+not exist yet) and writes the computed arena size into the per-model profile (`.ktn.prof`, new `expram` field),
+which `perfil_apply()` applies as `KATANA_EXPERT_RAM` the next time `chat`/`serve`/`agent` load that model. A
+`KATANA_EXPERT_RAM` the user set by hand always wins, exactly like the other profile fields.
+
+Tested on the real dev machine (RTX 3050 4GB, 61-66 GB RAM, Qwen3.6-35B-A3B Q4_K_M, 22 GB, `.exb` already
+built): with ample free RAM, `katana prepare` prints `arena de RAM: nao necessaria` and writes `expram 0.000`
+(no behavior change, as expected). Simulating a 16 GB machine with 8 GB free via the new test overrides, it
+printed `ligando arena de 6.4 GB`, found the existing bundle, and wrote `expram 6.442`; `katana serve` on that
+profile then applied `KATANA_EXPERT_RAM=6.442` on its own and `[expert_tier] ligado: ... 6.44 GB` confirmed the
+arena actually turned on with the computed size, end to end. Compiled with `build.sh`, 0 new errors/warnings
+(diffed against a clean build of the same `HEAD`). Not done: a real low-RAM machine (a phone, or a different
+notebook) was not used; the simulated-RAM path is the only test of the "doesn't fit" branch.
+
 ## Update (2026-11-27): `katana setup` and the full catalog
 
 `src/app/catalog.c` now has item kinds (`llm`, `vision`, `embedder`, `image`) and items made of several files (each with remote path, destination
