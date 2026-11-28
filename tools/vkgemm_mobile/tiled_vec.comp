@@ -1,0 +1,66 @@
+#version 450
+#extension GL_EXT_shader_explicit_arithmetic_types_float16 : require
+#extension GL_EXT_shader_16bit_storage : require
+#extension GL_EXT_control_flow_attributes : require
+
+/* ---- vkgemm_mobile/tiled_vec.comp: ladrilho com memoria compartilhada + leitura vetorizada (f16vec4) ----
+   Sem matriz cooperativa (o Xclipse 540 nao tem VK_KHR_cooperative_matrix): a mesma tecnica que
+   tools/vkgemm/gemm.comp usa para encher a memoria compartilhada (4 valores por leitura), mas o produto
+   em si e feito por "registro bloqueado" (cada thread acumula um micro-ladrilho TM x TN em registradores
+   float, com multiplicacao escalar fp16->fp32), nao por unidade de matriz dedicada - a tecnica descrita no
+   roadmap (secao 0): organizar o acesso a memoria (ladrilho + leitura vetorizada) e o que ganha 3-5x num
+   shader ingenuo, independente de hardware de matriz.
+   Grade: 256 threads (16x16), cada thread cobre 4x4 saidas => ladrilho de saida 64x64 (BM x BN).
+   Passo de profundidade BK=32 por vez, cabe folgado nos 32 KB de memoria compartilhada do aparelho
+   (buf_a + buf_b = 4096 + 4096 bytes, longe do limite). */
+layout(local_size_x = 256) in;
+
+const uint BM = 64, BN = 64, BK = 32;
+const uint TM = 4, TN = 4;          // saidas por thread (micro-ladrilho em registradores)
+const uint TX = BN / TN, TY = BM / TM;   // 16 x 16 threads
+
+layout(set = 0, binding = 0) readonly buffer WB { f16vec4 w[]; } wb;    // w[row*cols/4 + c4]
+layout(set = 0, binding = 1) readonly buffer XB { f16vec4 x[]; } xb;    // x[col*tokens/4 + t4] (tokens contiguo)
+layout(set = 0, binding = 2) writeonly buffer YB { float y[]; } yb;
+layout(push_constant) uniform PC { uint rows, cols, tokens; } pc;
+
+shared float16_t buf_a[BM * BK];     // buf_a[r*BK+k]
+shared float16_t buf_b[BK * BN];     // buf_b[k*BN+n]
+
+void main() {
+    const uint ir = gl_WorkGroupID.x * BM, ic = gl_WorkGroupID.y * BN;
+    const uint id = gl_LocalInvocationID.x;
+    const uint ty = id / TX, tx = id % TX;      // posicao deste thread na grade 16x16
+
+    float acc[TM][TN];
+    for (uint i = 0; i < TM; i++) for (uint j = 0; j < TN; j++) acc[i][j] = 0.0;
+
+    const uint cols4 = pc.cols / 4, tok4 = pc.tokens / 4;
+    for (uint k0 = 0; k0 < pc.cols; k0 += BK) {
+        // enche buf_a: BM*BK/4 leituras f16vec4, 256 threads -> 2 por thread (BM*BK/4/256 = 8 quando BM=BN=64,BK=32... ajustado abaixo)
+        const uint na = (BM * BK) / 4;          // total de leituras vec4 para A
+        for (uint i = id; i < na; i += 256) {
+            const uint r = i / (BK / 4), c4 = i % (BK / 4);
+            const f16vec4 v = wb.w[(ir + r) * cols4 + k0 / 4 + c4];
+            const uint o = r * BK + c4 * 4;
+            buf_a[o] = v.x; buf_a[o + 1] = v.y; buf_a[o + 2] = v.z; buf_a[o + 3] = v.w;
+        }
+        const uint nb = (BK * BN) / 4;          // total de leituras vec4 para B (vetor no eixo do token)
+        for (uint i = id; i < nb; i += 256) {
+            const uint k = i / (BN / 4), n4 = i % (BN / 4);
+            const f16vec4 v = xb.x[(k0 + k) * tok4 + ic / 4 + n4];
+            const uint o = k * BN + n4 * 4;
+            buf_b[o] = v.x; buf_b[o + 1] = v.y; buf_b[o + 2] = v.z; buf_b[o + 3] = v.w;
+        }
+        barrier();
+        [[dont_unroll]] for (uint k = 0; k < BK; k++) {
+            float ra[TM], rb[TN];
+            for (uint i = 0; i < TM; i++) ra[i] = float(buf_a[(ty * TM + i) * BK + k]);
+            for (uint j = 0; j < TN; j++) rb[j] = float(buf_b[k * BN + tx * TN + j]);
+            for (uint i = 0; i < TM; i++) for (uint j = 0; j < TN; j++) acc[i][j] += ra[i] * rb[j];
+        }
+        barrier();
+    }
+    for (uint i = 0; i < TM; i++) for (uint j = 0; j < TN; j++)
+        yb.y[(ir + ty * TM + i) * pc.tokens + ic + tx * TN + j] = acc[i][j];
+}

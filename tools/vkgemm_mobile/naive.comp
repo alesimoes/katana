@@ -1,0 +1,24 @@
+#version 450
+#extension GL_EXT_shader_explicit_arithmetic_types_float16 : require
+#extension GL_EXT_shader_16bit_storage : require
+
+/* ---- vkgemm_mobile/naive.comp: produto ingenuo (uma saida por thread, sem ladrilho, sem vetor) ----
+   Referencia "sem organizacao nenhuma", o mesmo ponto de partida que tools/vkgemm mediu no notebook
+   (0.51 T multiplicacoes/s antes de ladrilhar). Y[ROWS][TOKENS] = W[ROWS][COLS] * X[COLS][TOKENS];
+   W linha a linha, X transposto (coluna major: x[col*tokens+token], contiguo no token). */
+layout(local_size_x = 256) in;
+
+layout(set = 0, binding = 0) readonly buffer WB { float16_t w[]; } wb;
+layout(set = 0, binding = 1) readonly buffer XB { float16_t x[]; } xb;
+layout(set = 0, binding = 2) writeonly buffer YB { float y[]; } yb;
+layout(push_constant) uniform PC { uint rows, cols, tokens; } pc;
+
+void main() {
+    const uint idx = gl_GlobalInvocationID.x;
+    if (idx >= pc.rows * pc.tokens) return;
+    const uint row = idx / pc.tokens, tok = idx % pc.tokens;
+    float acc = 0.0;
+    for (uint c = 0; c < pc.cols; c++)
+        acc += float(wb.w[row * pc.cols + c]) * float(xb.x[c * pc.tokens + tok]);
+    yb.y[row * pc.tokens + tok] = acc;
+}
