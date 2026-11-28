@@ -338,6 +338,13 @@ static float *forward(Model *m, int token, int pos, int want_logits) {
     if (c->gr) { embed_row(m, m->x, token); grh_layers_n(m, 0, c->n_layers, pos, 1, m->x); return want_logits ? cpu_head(m) : NULL; }
     if (vkg.on && !gpu.force_cpu) return vk_forward_1(m, token, pos, want_logits);
     if (gpu.n_gl > 0 && !gpu.force_cpu) return gpu_forward_n(m, &gpu.set[gpu.n_sets - 1], &token, pos, want_logits);
+    /* gemma4 (modo hibrido): sem grafo gravado proprio; o lote da GPU (vk_g4_n) aceita B=1, mas o produto
+       cooperativo dele e feito para lotes maiores - medido no E2B, token a token fica mais lento assim
+       (~17 tok/s) do que deixando cpu_layers/g4_layer, que ja faz os mesmos produtos com vk_matvecs (ida e
+       volta mais leve, pensado para B=1): ~36 tok/s. Por isso o padrao e NAO usar vk_g4_n na decodificacao;
+       KATANA_VK_G4DEC=1 liga (so o prompt, em lote, sempre usa vk_g4_n). */
+    if (vkg4.ok && !gpu.force_cpu && getenv("KATANA_VK_G4DEC") && atoi(getenv("KATANA_VK_G4DEC")) != 0)
+        return vk_g4_n(m, &token, 1, pos, want_logits);
     embed_row(m, m->x, token);
     if (c->g4 && c->ple_dim) g4_ple_prep(m, token, m->x, m->g4_ple);
     cpu_layers(m, 0, c->n_layers, pos);

@@ -230,11 +230,15 @@ static void mla_gpu_upload(Model *m) {
     char nm[32];
     for (int l = 0; l < c->n_layers; l++) {
         Layer *L = &m->layers[l];
-        if (c->g4) {        /* gemma4: atencao (largura por camada), feed-forward denso; roteador e normas na CPU */
-            const size_t hq = nh * L->hd_l, hk = (size_t)L->nkv_l * L->hd_l, Hd = c->hidden_dense;
+        if (c->g4) {        /* gemma4: atencao (largura por camada), feed-forward denso; roteador e normas na CPU.
+                               Hd e por camada (L->hidden_l): c->hidden_dense e so o maior entre todas (E2B/E4B tem
+                               MLP duplo-largo nas camadas finais), subir com ele uma camada mais estreita le lixo. */
+            const size_t hq = nh * L->hd_l, hk = (size_t)L->nkv_l * L->hd_l, Hd = (size_t)L->hidden_l;
             snprintf(nm, sizeof nm, "L%03d.wq", l); gpu_upload(&L->wq, hq, d, nm);
-            snprintf(nm, sizeof nm, "L%03d.wk", l); gpu_upload(&L->wk, hk, d, nm);
-            if (L->wv.q || L->wv.f) { snprintf(nm, sizeof nm, "L%03d.wv", l); gpu_upload(&L->wv, hk, d, nm); }
+            if (!L->kv_shared) {    /* camada sem K/V proprio (kv_shared_n): wk/wv ficam zerados, nada para subir */
+                snprintf(nm, sizeof nm, "L%03d.wk", l); gpu_upload(&L->wk, hk, d, nm);
+                if (L->wv.q || L->wv.f) { snprintf(nm, sizeof nm, "L%03d.wv", l); gpu_upload(&L->wv, hk, d, nm); }
+            }
             snprintf(nm, sizeof nm, "L%03d.wo", l); gpu_upload(&L->wo, d, hq, nm);
             snprintf(nm, sizeof nm, "L%03d.gate", l); gpu_upload(&L->w_gate, Hd, d, nm);
             snprintf(nm, sizeof nm, "L%03d.up", l);   gpu_upload(&L->w_up, Hd, d, nm);

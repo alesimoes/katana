@@ -1,36 +1,43 @@
-/* ---------- gemma4 em Vulkan (modo hibrido): prompt em lote ----------
+/* ---------- gemma4 em Vulkan (modo hibrido): prompt em lote e, desde KTNEXB03, token a token (decodificacao) ----------
    Residual dos B tokens na CPU (token a token: X[t*dim]). Por camada, os produtos densos do lote vao a GPU no mm
    preciso (alta + resto, ativacao fp32): q, k, v; saida da atencao; gate, up e down do feed-forward denso. Normas,
    RoPE, gravacao do cache (anel nas locais) e a atencao ficam na CPU, em blocos de G4_NB tokens (o anel tem folga
    de G4_NB posicoes: um bloco grava antes de atender). O MoE: vk_moe_n (vagas do cache, frios temporarios ou na
    CPU; roteador calculado na CPU) ou, sem cache de especialistas, na CPU como o g4_layers_n.
+   PLE (E2B/E4B) e K/V compartilhado (kv_shared_n) sao suportados: os produtos grandes (wq/wk-se-houver/wv-se-houver/
+   wo/gate/up/down) vao a GPU como antes; o terceiro residuo do PLE (per_layer_inp_gate, portao GELU, per_layer_proj,
+   norma) fica na CPU, por formula identica ao g4_layer (matrizes pequenas, ple_dim tipico 256 x dim ~1500: o
+   ganho de levar isso a GPU nao paga o ida-e-volta de mais um despacho por camada). Camadas kv_shared nao tem
+   wk/wv proprios: nao sobem q/k/v cedo, so q; a atencao le o cache da camada doadora (kv_off/kv_cap ja apontam
+   para la, preparado em model.c) exatamente como no g4_layer/g4_layers_n da CPU.
+   Largura de feed-forward variavel por camada (E4B, se existir) ainda nao e suportada aqui: cai para a CPU.
    KATANA_VK_G4=0 desliga (prompt como antes); o MoE do lote vai as vagas por padrao (KATANA_VK_G4MOE=0 o deixa na CPU). */
 static struct {
     int ok, P, moe;
-    float *X, *Xb, *X2, *Q, *KK, *VV, *O, *HB, *HB2, *YA, *YB, *LG, *T, *OUTS;
+    float *X, *Xb, *X2, *Q, *KK, *VV, *O, *HB, *HB2, *YA, *YB, *LG, *T, *OUTS, *PLE;
     double t_gpu, t_att, t_moe; long passes;
 } vkg4;
 
 static int vk_g4_build(Model *m) {
     const Config *c = &m->cfg;
     const int NL = c->n_layers;
+    /* Hd e o MAIOR feed-forward denso entre as camadas (c->hidden_dense; E2B/E4B tem MLP duplo-largo nas
+       camadas finais): so dimensiona os buffers de trabalho (HB/HB2 etc, com folga). Cada despacho usa a
+       largura real desta camada (L->hidden_l), nunca Hd direto - ver vk_g4_n. */
     const size_t d = c->dim, nh = c->n_heads, Hd = c->hidden_dense, E = c->n_expert;
     memset(&vkg4, 0, sizeof vkg4);
     if (getenv("KATANA_VK_G4") && atoi(getenv("KATANA_VK_G4")) == 0) return 0;
-    /* PLE, largura de feed-forward por camada e K/V compartilhado (E2B/E4B) nao tem formula confirmada
-       neste caminho (ele supoe Hd uniforme e wk/wv em toda camada): CPU por enquanto (g4_layer/g4_layers_n) */
-    if (c->ple_dim || c->kv_shared_n) return 0;
     if (!vkg.coop || d % 64 || Hd % 64) return 0;
     size_t qdm = 0, kvm = 0;
 #define MOK(M) ((M).gbuf && gpu_kind(&(M)) != T_Q2_K && gpu_has(&(M)) && (M).gs == 1)
     for (int l = 0; l < NL; l++) {
         const Layer *L = &m->layers[l];
         const size_t qd = nh * L->hd_l, kvd = (size_t)L->nkv_l * L->hd_l;
-        if (qd % 64 || kvd % 64) return 0;
+        if (qd % 64 || kvd % 64 || (size_t)L->hidden_l % 64) return 0;
         if (qd > qdm) qdm = qd;
         if (kvd > kvm) kvm = kvd;
-        int ok = MOK(L->wq) && MOK(L->wk) && MOK(L->wo) && MOK(L->w_gate) && MOK(L->w_up) && MOK(L->w_down);
-        if (L->wv.q || L->wv.f) ok = ok && MOK(L->wv);
+        int ok = MOK(L->wq) && (L->kv_shared || MOK(L->wk)) && MOK(L->wo) && MOK(L->w_gate) && MOK(L->w_up) && MOK(L->w_down);
+        if (!L->kv_shared && (L->wv.q || L->wv.f)) ok = ok && MOK(L->wv);
         if (!ok) { fprintf(stderr, "Vulkan: produto denso do gemma4 fora da VRAM (camada %d): prompt em lote na CPU\n", l); return 0; }
     }
 #undef MOK
@@ -114,6 +121,7 @@ static int vk_g4_build(Model *m) {
     vkg4.Q = xalloc(qdm * P, 4); vkg4.O = xalloc(qdm * P, 4); vkg4.KK = xalloc(kvm * P, 4); vkg4.VV = xalloc(kvm * P, 4);
     vkg4.HB = xalloc(Hd * P, 4); vkg4.HB2 = xalloc(Hd * P, 4); vkg4.YA = xalloc(d * P, 4); vkg4.YB = xalloc(d * P, 4);
     vkg4.LG = xalloc((E ? E : 1) * P, 4); vkg4.OUTS = xalloc((size_t)G4_NB * (c->n_used ? c->n_used : 1) * d, 4);
+    if (c->ple_dim) vkg4.PLE = xalloc(P * (size_t)NL * c->ple_dim, 4);     /* PLE de toda a passada, nao so G4_NB: terceiro residuo fica na CPU */
     vkg4.P = (int)P; vkg4.ok = 1;
     fprintf(stderr, "Vulkan: prompt gemma4 em lote (ate %zu tokens por passada, %.0f MB; MoE do lote %s)\n", P,
             (gpu.used - used0) / 1048576.0, vkg4.moe ? "nas vagas" : "na CPU");
@@ -150,30 +158,41 @@ static void vk_g4_getv(const KvkBuf *b, float *const *A, const int *n, int k, in
 
 static float *vk_g4_n(Model *m, const int *toks, int B, int pos0, int want_logits) {
     const Config *c = &m->cfg;
-    const int d = c->dim, nh = c->n_heads, K = c->n_used, E = c->n_expert, Hd = c->hidden_dense;
+    const int d = c->dim, nh = c->n_heads, K = c->n_used, E = c->n_expert;
     static int ex[G4_NB * MOE_KMAX], xi[G4_NB * MOE_KMAX]; static float ew[G4_NB * MOE_KMAX];
     if (B < 1 || B > vkg4.P || pos0 < 0 || pos0 + B > c->ctx) die("lote fora do limite (Vulkan, gemma4)");
     float *X = vkg4.X, *Xb = vkg4.Xb, *X2 = vkg4.X2, *Q = vkg4.Q, *KK = vkg4.KK, *VV = vkg4.VV, *O = vkg4.O;
     float *HB = vkg4.HB, *HB2 = vkg4.HB2, *YA = vkg4.YA, *YB = vkg4.YB;
     for (int t = 0; t < B; t++) embed_row(m, X + (size_t)t * d, toks[t]);
+    if (c->ple_dim) {   /* PLE: terceiro residuo de cada camada, preparado agora com o embedding cru do token */
+        const int Ln = c->n_layers, E2 = c->ple_dim;
+        for (int t = 0; t < B; t++) g4_ple_prep(m, toks[t], X + (size_t)t * d, vkg4.PLE + (size_t)t * Ln * E2);
+    }
     for (int l = 0; l < c->n_layers; l++) {
         const Layer *L = &m->layers[l];
         const int hd = L->hd_l, nkv = L->nkv_l, qd = nh * hd, kvd = nkv * hd, half = hd / 2, cap = L->kv_cap;
-        const int hasv = L->wv.q || L->wv.f;
+        const int Hd = L->hidden_l;     /* largura do feed-forward denso DESTA camada (E2B/E4B: varia por camada) */
+        const int hasv = !L->kv_shared && (L->wv.q || L->wv.f);
         const float *fr = L->swa ? m->rope_freq_swa : m->rope_freq;
         double t0 = now_sec();
         int ok = 1;
         for (int t = 0; t < B; t++) rmsnorm(Xb + (size_t)t * d, X + (size_t)t * d, L->attn_norm, d, c->eps);
         ok &= vk_g4_put(vkbm.xf, Xb, B, d);
         ok &= vk_mm_p(&L->wq, vkbm.xf, vkb.q, qd, d, B, 0, 1);
-        ok &= vk_mm_p(&L->wk, vkbm.xf, vkb.k, kvd, d, B, 0, 1);
-        if (hasv) ok &= vk_mm_p(&L->wv, vkbm.xf, vkb.q2, kvd, d, B, 0, 1);
+        if (!L->kv_shared) {
+            ok &= vk_mm_p(&L->wk, vkbm.xf, vkb.k, kvd, d, B, 0, 1);
+            if (hasv) ok &= vk_mm_p(&L->wv, vkbm.xf, vkb.q2, kvd, d, B, 0, 1);
+        }
         if (!ok) die("falha na execucao em Vulkan (lote, gemma4)");
-        {   const KvkBuf rd[3] = { vkb.q, vkb.k, vkb.q2 };      /* uma espera so */
+        if (!L->kv_shared) {
+            const KvkBuf rd[3] = { vkb.q, vkb.k, vkb.q2 };      /* uma espera so */
             float *const rt[3] = { Q, KK, VV };
             const int rn[3] = { qd, kvd, kvd };
-            vk_g4_getv(rd, rt, rn, 2 + hasv, B); }
-        if (!hasv) memcpy(VV, KK, (size_t)B * kvd * sizeof(float));
+            vk_g4_getv(rd, rt, rn, 2 + hasv, B);
+            if (!hasv) memcpy(VV, KK, (size_t)B * kvd * sizeof(float));
+        } else {
+            vk_g4_get(vkb.q, Q, B, qd);     /* camada sem K/V proprio: so q (le o cache da camada doadora) */
+        }
         double t1 = now_sec();
         vkg4.t_gpu += t1 - t0;
         float *kb = m->kcache ? m->kcache + L->kv_off : NULL, *vb = m->vcache ? m->vcache + L->kv_off : NULL;
@@ -181,16 +200,24 @@ static float *vk_g4_n(Model *m, const int *toks, int B, int pos0, int want_logit
         for (int b0 = 0; b0 < B; b0 += G4_NB) {     /* blocos de G4_NB: o anel das locais so tem essa folga */
             const int nb = B - b0 < G4_NB ? B - b0 : G4_NB;
             for (int t = b0; t < b0 + nb; t++) {
-                float *q = Q + (size_t)t * qd, *k = KK + (size_t)t * kvd, *v = VV + (size_t)t * kvd;
+                float *q = Q + (size_t)t * qd;
                 const int pos = pos0 + t;
                 for (int h = 0; h < nh; h++) rmsnorm(q + h * hd, q + h * hd, L->q_norm, hd, c->eps);
-                for (int h = 0; h < nkv; h++) { rmsnorm(k + h * hd, k + h * hd, L->k_norm, hd, c->eps); rms_plain(v + h * hd, hd, c->eps); }
-                for (int i = 0; i < half; i++) {
-                    const float ang = pos * fr[i], cs = cosf(ang), sn = sinf(ang);
-                    for (int h = 0; h < nh; h++) { float *p = q + h * hd + i, a = p[0], bb = p[half]; p[0] = a * cs - bb * sn; p[half] = a * sn + bb * cs; }
-                    for (int h = 0; h < nkv; h++) { float *p = k + h * hd + i, a = p[0], bb = p[half]; p[0] = a * cs - bb * sn; p[half] = a * sn + bb * cs; }
+                if (!L->kv_shared) {
+                    float *k = KK + (size_t)t * kvd, *v = VV + (size_t)t * kvd;
+                    for (int h = 0; h < nkv; h++) { rmsnorm(k + h * hd, k + h * hd, L->k_norm, hd, c->eps); rms_plain(v + h * hd, hd, c->eps); }
+                    for (int i = 0; i < half; i++) {
+                        const float ang = pos * fr[i], cs = cosf(ang), sn = sinf(ang);
+                        for (int h = 0; h < nh; h++) { float *p = q + h * hd + i, a = p[0], bb = p[half]; p[0] = a * cs - bb * sn; p[half] = a * sn + bb * cs; }
+                        for (int h = 0; h < nkv; h++) { float *p = k + h * hd + i, a = p[0], bb = p[half]; p[0] = a * cs - bb * sn; p[half] = a * sn + bb * cs; }
+                    }
+                    g4_kv_put(kb, vb, kh, vh, (size_t)(pos % cap) * kvd, k, v, kvd);
+                } else {
+                    for (int i = 0; i < half; i++) {       /* sem K/V proprio: so gira q, com a mesma freq da camada doadora */
+                        const float ang = pos * fr[i], cs = cosf(ang), sn = sinf(ang);
+                        for (int h = 0; h < nh; h++) { float *p = q + h * hd + i, a = p[0], bb = p[half]; p[0] = a * cs - bb * sn; p[half] = a * sn + bb * cs; }
+                    }
                 }
-                g4_kv_put(kb, vb, kh, vh, (size_t)(pos % cap) * kvd, k, v, kvd);
             }
             G4AttN aj = { Q + (size_t)b0 * qd, O + (size_t)b0 * qd, kb, vb, kh, vh, pos0 + b0, nh, hd, kvd, nh / nkv,
                           L->swa && c->swa_win < cap ? c->swa_win : cap, cap };
@@ -282,11 +309,25 @@ static float *vk_g4_n(Model *m, const int *toks, int B, int pos0, int want_logit
                 for (int i = 0; i < d; i++) ya[i] += yb[i];
             }
         }
-        for (int t = 0; t < B; t++) {
-            float *x = X + (size_t)t * d, *ya = YA + (size_t)t * d;
-            rmsnorm(ya, ya, L->post_ffn_norm, d, c->eps);
-            for (int i = 0; i < d; i++) x[i] = (x[i] + ya[i]) * L->out_scale;
-            if (layer_tap) layer_tap(l, pos0 + t, x);
+        {   static float *pt, *pt2;
+            const int E2 = c->ple_dim, Ln = c->n_layers;
+            if (c->ple_dim && !pt) { pt = xalloc(E2, sizeof(float)); pt2 = xalloc(d, sizeof(float)); }
+            for (int t = 0; t < B; t++) {
+                float *x = X + (size_t)t * d, *ya = YA + (size_t)t * d;
+                rmsnorm(ya, ya, L->post_ffn_norm, d, c->eps);
+                for (int i = 0; i < d; i++) x[i] += ya[i];
+                if (c->ple_dim) {   /* PLE: terceiro residuo, formula identica ao g4_layer (CPU: matrizes pequenas, nao compensa a GPU) */
+                    matvec(pt, &L->per_layer_inp_gate, x, E2, d);
+                    for (int i = 0; i < E2; i++) pt[i] = gelu_t(pt[i]);
+                    const float *inp_l = vkg4.PLE + ((size_t)t * Ln + l) * E2;
+                    for (int i = 0; i < E2; i++) pt[i] *= inp_l[i];
+                    matvec(pt2, &L->per_layer_proj, pt, d, E2);
+                    rmsnorm(pt2, pt2, L->per_layer_post_norm, d, c->eps);
+                    for (int i = 0; i < d; i++) x[i] += pt2[i];
+                }
+                for (int i = 0; i < d; i++) x[i] *= L->out_scale;
+                if (layer_tap) layer_tap(l, pos0 + t, x);
+            }
         }
         vkg4.t_moe += now_sec() - t1;
     }
