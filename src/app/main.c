@@ -1334,6 +1334,7 @@ static int run_main(int argc, char **argv) {
         return tokenize_cmd(&m, src, ids);
     }
     if (strcmp(argv[1], "hw") == 0) return hw_cmd(argc >= 3 ? argv[2] : models_dir());
+    if (strcmp(argv[1], "vkcaps") == 0) return vkcaps_cmd();   /* diagnostico: extensoes/recursos Vulkan do aparelho, sem carregar modelo (P8) */
     if (strcmp(argv[1], "setup") == 0) return setup_cmd(argc - 2, argv + 2);
     if (strcmp(argv[1], "catalog") == 0) return catalog_cmd(argc >= 3 ? argv[2] : models_dir());
     if (argc >= 3 && strcmp(argv[1], "pull") == 0) return pull_cmd(argv[2], argc >= 4 ? argv[3] : models_dir());

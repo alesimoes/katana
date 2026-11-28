@@ -143,6 +143,64 @@ static int hw_cmd(const char *dir) {
     return 0;
 }
 
+static const char *vk_coop_type_name(int t) {
+    switch (t) {
+        case 0: return "fp16"; case 1: return "fp32"; case 2: return "fp64";
+        case 3: return "sint8"; case 4: return "sint16"; case 5: return "sint32"; case 6: return "sint64";
+        case 7: return "uint8"; case 8: return "uint16"; case 9: return "uint32"; case 10: return "uint64";
+        default: return "?";
+    }
+}
+
+/* katana vkcaps: capacidades reais da GPU Vulkan deste aparelho, sem carregar modelo nenhum (diagnostico).
+   Criado para investigar por que o Xclipse 540 (Galaxy A56) cai no caminho token a token do prompt: sem
+   VK_KHR_cooperative_matrix (vk_dense.c, vkg.coop) o lote do prompt fica desligado por inteiro (vkg.P=0,
+   vk_plan). Lista tambem VK_KHR_shader_integer_dot_product e fp16/int8, os dois caminhos alternativos
+   citados na proposta P8 de docs/research-hardware-algorithms.md. */
+static int vkcaps_cmd(void) {
+    KvkInfo I;
+    if (!kvk_init(&I)) { printf("vulkan\tindisponivel\nerro\t%s\n", kvk_error()); return 1; }
+    printf("device\t%s\n", I.name);
+    printf("device_index\t%d de %d\n", I.device_index, I.n_devices);
+    printf("discrete\t%d\n", I.is_discrete);
+    printf("unified_memory\t%d\n", I.unified_memory);
+    printf("vendor_id\t0x%04x\n", I.vendor_id);
+    printf("device_id\t0x%04x\n", I.device_id);
+    printf("api_version\t%u.%u.%u\n", VK_API_VERSION_MAJOR(I.api_version), VK_API_VERSION_MINOR(I.api_version), VK_API_VERSION_PATCH(I.api_version));
+    printf("vram_mb\t%.0f\n", I.vram_bytes / 1048576.0);
+    printf("subgroup_size\t%u\n", I.subgroup_size);
+    printf("max_shared_bytes\t%u\n", I.max_shared);
+    printf("max_push_bytes\t%u\n", I.max_push);
+    printf("max_wg_invocations\t%u\n", I.max_wg_invocations);
+    printf("max_storage_range_mb\t%.0f\n", I.max_storage_range / 1048576.0);
+    printf("max_alloc_mb\t%.0f\n", I.max_alloc / 1048576.0);
+    printf("-- recursos opcionais (ativados pelo driver, nao so presentes no driver) --\n");
+    printf("cooperative_matrix (VK_KHR_cooperative_matrix)\t%d\n", I.coopmat);
+    printf("shader_integer_dot_product (VK_KHR_shader_integer_dot_product)\t%d\n", I.int_dot);
+    printf("shaderFloat16\t%d\n", I.fp16);
+    printf("storageBuffer16BitAccess\t%d\n", I.storage16);
+    printf("shaderInt8 + storageBuffer8BitAccess\t%d\n", I.int8);
+    printf("storageBuffer8BitAccess (isolado)\t%d\n", I.storage8);
+    printf("shaderInt16\t%d\n", I.int16);
+    if (I.coopmat) {
+        printf("-- formas de matriz cooperativa (%d) --\n", I.n_coop);
+        for (int i = 0; i < I.n_coop; i++) {
+            const KvkCoop *c = &I.coop[i];
+            printf("  MxNxK=%ux%ux%u A=%s B=%s C=%s R=%s scope=%d\n", c->m, c->n, c->k,
+                   vk_coop_type_name(c->a_type), vk_coop_type_name(c->b_type), vk_coop_type_name(c->c_type), vk_coop_type_name(c->r_type), c->scope);
+        }
+    } else {
+        printf("-- matriz cooperativa: extensao ausente ou sem suporte no driver (sem formas listadas) --\n");
+    }
+    printf("\nresumo\t%s\n",
+        I.coopmat ? "matriz cooperativa disponivel: lote do prompt pela GPU no caminho rapido de hoje" :
+        I.int_dot ? "sem matriz cooperativa, com shader_integer_dot_product: caminho em lote por produto inteiro int8 e viavel (P8)" :
+        I.fp16 ? "sem matriz cooperativa nem produto inteiro: resta fp16 escalar em lote, sem unidade dedicada (ganho menor)" :
+        "sem matriz cooperativa, sem produto inteiro e sem fp16: so token a token mesmo");
+    kvk_shutdown();
+    return 0;
+}
+
 static long long cat_total(const CatItem *c) { long long t = 0; for (int k = 0; k < c->nfiles; k++) t += c->files[k].bytes; return t; }
 
 /* estado do item: bytes ja no disco (arquivos completos e parciais .part) e se esta tudo instalado */
