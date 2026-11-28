@@ -1271,6 +1271,7 @@ static int run_main(int argc, char **argv) {
            (bypassa o tokenizador de proposito: so confere a matematica do modelo). */
         Model m; memset(&m, 0, sizeof m);
         load_model(&m, argv[2]);
+        if (getenv("KATANA_EXACT")) cpu_exact = atoi(getenv("KATANA_EXACT"));
         const int N = argc >= 4 ? atoi(argv[3]) : 23, V = m.cfg.vocab;
         int *toks = xalloc(N, sizeof(int));
         for (int i = 0; i < N; i++) toks[i] = (int)((1000003u * (i + 1)) % (unsigned)V);

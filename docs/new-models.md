@@ -479,3 +479,121 @@ GPU, if wanted later, is new work (not started).
 - **GPU (Vulkan) for E2B/E4B**: see above; falls back to CPU today.
 - **`katana pack`/shards, `katana tune`, the expert-cache machinery**: not applicable (no experts) or not
   exercised for this model yet.
+
+## IBM Granite 4.0 H Tiny in the engine (CPU only, working since 2026-11-27)
+
+Model: `models/granite/model.gguf` (unsloth/granite-4.0-h-tiny-GGUF, Q4_K_M, ~4.1 GB). First architecture in
+katana with a **Mamba-2** (state-space) layer type: `general.architecture = granitehybrid` is a hybrid of
+Mamba-2 (SSD) layers and full-attention layers, with mixture-of-experts (MoE, softmax router, shared experts)
+on every layer, none of which the engine had before (`src/engine/qwen35.c`'s DeltaNet is a different, gated
+linear-attention formula, not Mamba-2). Implemented in a new file, `src/engine/granite.c`. The Mamba-2 formula
+(state-space duality, SSD) is public/academic (Dao & Gu, 2024); understood here by reading the reference
+engine's C++ source (`ref/llama-src/src/models/mamba-base.cpp`'s `build_mamba2_layer`,
+`ggml/src/ggml-cpu/ops.cpp`'s `ggml_compute_forward_ssm_scan_f32`, `granite-hybrid.cpp`) and the published
+Mamba-2 paper, only to confirm the exact arithmetic — nothing copied; the katana code is its own, in the
+project's own style (see `CLAUDE.md`).
+
+### Metadata and tensors confirmed in the GGUF (40 layers, dim 1536, 64 experts/6 used, 6939.0M counted)
+
+| Key | Value | What it is |
+|---|---|---|
+| `granitehybrid.attention.head_count_kv` | array[40]: 0 except layers 5/15/25/35 (= 4) | 0 = Mamba-2 layer, else attention (`L->lin`) |
+| `granitehybrid.ssm.conv_kernel` / `.state_size` / `.group_count` / `.time_step_rank` / `.inner_size` | 4 / 128 / 1 / 48 / 3072 | conv window, `d_state`, `n_group`, `n_head` (reuses the `time_step_rank` key, which means something else for DeltaNet), `d_inner` |
+| `granitehybrid.attention.scale` | 0.0078125 (= 1/128, not `1/sqrt(hd)` = 1/11.3) | q.k scale, used as-is (muP), not derived from head width |
+| `granitehybrid.embedding_scale` / `.residual_scale` / `.logit_scale` | 12.0 / 0.22 / 6.0 | muP scales: embedding (once), each sub-layer's output before its residual add (twice per layer), final logits (divide) |
+| `granitehybrid.expert_count` / `.expert_used_count` | 64 / 6 | MoE, softmax router, renormalized (no `expert_gating_func`/`expert_weights_norm` key in this GGUF, so the default softmax + no-renorm engine behaviour had to be overridden on purpose for this arch, see below) |
+| `granitehybrid.expert_feed_forward_length` / `.expert_shared_feed_forward_length` | 512 / 1024 | expert width; shared-expert width (2 shared experts, always summed, no gate) |
+
+Per Mamba-2 layer: `blk.N.ssm_in.weight` [1536, 6448] (fused projection: `z`(3072) + `x|B|C`(3328) +
+`dt`(48), in that order — confirmed against `mamba-base.cpp`'s view offsets), `ssm_conv1d.weight` [4, 3328] +
+`.bias` [3328], `ssm_a`/`ssm_d` [1, 48] (already the final per-head scalars, no `-exp()` transform needed —
+confirmed by using them directly, matching `ggml_compute_forward_ssm_scan_f32`), `ssm_dt.bias` [48],
+`ssm_norm.weight` [3072] (grouped RMSNorm, `n_group=1` here so one norm over the whole vector), `ssm_out.weight`
+[3072, 1536]. Per attention layer: plain `attn_q`/`attn_k`/`attn_v`/`attn_output`, no bias, no q/k norm, no MLA.
+Every layer: `ffn_gate_inp`/`ffn_{gate,up,down}_exps` (MoE) + `ffn_{gate,up,down}_shexp` (2 shared experts fused,
+`n_shared` computed the same way as the other MoE architectures). RoPE is the "normal" (adjacent-pair)
+convention, not NEOX (confirmed in the reference engine's `llama_model_rope_type`: granite falls in the same
+list as `llama`/`deepseek2`, not `qwen2`/`qwen3`), full head width (`rope.dimension_count` = `hd` = 128, so no
+partial rotation).
+
+### Mamba-2 formula (one token; batched prompt does the projections for all tokens at once, then the
+convolution and recurrence token by token, same structure as the DeltaNet code)
+
+```
+z, xBC, dt = split(ssm_in(xb))                              # 3072, 3328, 48
+xBC = silu(causal_conv1d(xBC, window=4) + conv_bias)         # state: last 3 taps per channel
+x, B, C = split(xBC)                                         # 3072 (48 heads x 64), 128, 128
+per head h (48 heads, 1 group so every head reads the same B/C):
+  dt_sp = softplus(dt[h] + dt_bias[h]);  dA = exp(ssm_a[h] * dt_sp)
+  S[h] = S[h] * dA + outer(B, x[h] * dt_sp)                  # state [128][64], carried across positions
+  y[h] = S[h]^T . C  +  x[h] * ssm_d[h]
+y = silu(z) * y                                               # gate
+y = rmsnorm(y) * ssm_norm                                     # n_group=1: one norm over all 3072
+out = ssm_out(y)
+```
+
+Each layer (Mamba-2 or attention) and the feed-forward both scale their output by `residual_scale` before
+adding it to the residual stream (muP; two `ggml_scale` calls per layer in the reference graph, confirmed by
+reading `granite-hybrid.cpp`'s `build_layer_ffn`/`build_attention_layer`). Final logits are divided by
+`logit_scale` (`src/engine/forward.c`'s `logit_softcap`, extended; 0 = no-op, so every other architecture is
+unaffected).
+
+### Numeric verification
+
+- **Exact product vs fast CPU kernels** (`katana selftest`): every new weight matrix — `ssm_in`/`ssm_out` of a
+  Mamba-2 layer and `attn_q/k/v/output` + expert 0 of an attention layer (the generic two-layer sample in
+  `qtest.c` only ever lands on Mamba-2 layers for this model, so a third, explicit attention-layer check was
+  added) — worst relative error 4.61e-08 (exact) and 3.18e-06 (CPU integer path), same order as every other
+  architecture.
+- **Mamba-2 recurrence, a second formula**: `grh_recur_selftest` (`katana qtest`) runs the production
+  per-head kernel (`grh_job`) against an independently written, double-precision version of the same formula
+  (synthetic heads/state, 5 steps with the state carried between them, like real positions) — worst difference
+  **1.24e-07**. Same method as the recent `dq_q4k_selftest` (NEON x scalar) in `model.c`.
+- **Batch (`grh_layers_n`, prompt, B up to 16) vs token by token (B=1), through the real `forward_seq`/
+  `forward` dispatch**: 23 synthetic tokens, split across a batch boundary (16+7) so the Mamba-2 state and
+  conv history have to carry correctly between calls — **0.000e+00 difference**, same argmax. New `qtest.c`
+  check (`c->gr` block, mirrors the `c->g4` one).
+- **Against an independent, from-scratch computation (not the engine's own code, not the reference engine
+  either)**: wrote a throwaway, stdlib+numpy-only Python script that reads the raw GGUF bytes, dequantizes
+  Q4_K/Q6_K by hand, and recomputes layer 0's whole Mamba-2 path in double precision (embedding -> rmsnorm ->
+  `ssm_in` matmul -> conv -> recurrence -> gate -> grouped norm -> `ssm_out` matmul) for the real token id used
+  by `rawlogits`. katana's own numbers match this ground truth at every one of those steps to float32 rounding
+  (e.g. `ssm_out` output: ground truth sum=36.2554/sumsq=2125.4731, katana sum=36.2480/sumsq=2125.4774, first
+  three values matching to 4-5 significant digits). This is the strongest check done here, independent of any
+  other engine's code.
+- **Against the reference engine on the same raw token ids** (new hidden command `katana rawlogits <gguf>
+  [N]`: `N` synthetic ids, `(1000003*(i+1)) % vocab`, no tokenizer involved, so this does not depend on the
+  `dbrx` pre-tokenizer below): for a single token the argmax already matches (token 198 both ways) but the
+  logit values differ by a few percent; for 23 tokens the final argmax differs. Traced layer by layer (`cb_eval`
+  on a locally built, throwaway copy of the reference engine, never committed, never shipped — see
+  `ref/llama-src/CLAUDE.md`/`AGENTS.md`, which only restrict contributing *to that project*, not reading it for
+  this purpose) down to the exact step: the Mamba-2 scan itself (`mamba2_y_add_d`, i.e. everything up to and
+  including the state-space recurrence and the `D` skip) matches between katana and the reference engine to
+  1e-5 relative — but the reference engine's own gate+norm+`ssm_out` output for layer 0 is *already* ~2-3% off
+  from the from-scratch ground truth above, more than katana's. Most likely explanation: the reference
+  engine's own quantized-activation GEMM for this specific Q4_K matrix is less precise than katana's for this
+  model (both engines' "exact" vs "fast" paths agree closely *within themselves*, per the first check above).
+  A few percent of per-layer error, compounding over 40 layers through a MoE-routed (discontinuous: top-6 of
+  64 experts) network, is enough to flip which experts get picked partway through and diverge the final
+  answer — a known behaviour of quantized MoE models across different inference engines, not evidence by
+  itself that either engine's formula is wrong. Given the ground-truth match above and the end-to-end text
+  below, this is treated as inconclusive rather than a katana bug, but is **not fully proven** either way for
+  all 40 layers; flagged here for whoever picks this up next.
+- **End to end** (no chat template yet, plain completion): `katana run models/granite/model.gguf "The capital
+  of France is"` -> `Paris.` (then degenerates into repetition, expected for greedy decoding without the real
+  sampler defaults tuned for this model); `"2 + 2 ="` -> `4`; `"List three colors:"` -> `red, green, blue.`
+  Coherent and correct, the best signal available without a reference engine to diff against.
+
+### Left for later (not started)
+
+- **Chat template / tool calling**: the GGUF's Jinja template is a full tool-calling format (own
+  `tools_system_message_prefix` etc.); `chat_fmt` was not mapped for `granitehybrid`, so `katana chat` falls
+  back to plain text. Needs its own pass.
+- **Tokenizer pre-tokenizer**: `tokenizer.ggml.pre = "dbrx"` is not one of katana's known pre-tokenizer kinds
+  (`PRE_*` in `tokenizer.c`); it currently falls back to the legacy pattern, which is good enough for the plain
+  English above but not guaranteed byte-exact for code, numbers or non-English text. Needs the actual DBRX
+  regex.
+- **GPU (Vulkan/OpenCL)**: `gpu_setup` bails to CPU for `c->gr` on purpose (message, not crash) — Mamba-2 has
+  no graph/kernel on the GPU yet.
+- **The 40-layer reference-engine divergence above**: not fully explained; worth finishing if a GPU-free,
+  bit-exact cross-check matters more than it does today.
